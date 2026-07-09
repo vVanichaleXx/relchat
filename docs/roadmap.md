@@ -18,22 +18,22 @@
 
 ## Phase 2: Telegram Bot Setup Assistant
 
-- Add a Telegram bot as the user-facing setup surface.
-- Guide users through privacy expectations and local-first storage.
-- Help users provide Telegram API credentials when needed.
-- Guide MTProto login without exposing secrets in logs.
+- Add Bot Interface v0 as a restricted Telegram user interface.
+- Show setup status and local-first privacy expectations.
+- Keep MTProto login in the local CLI for now without exposing secrets in logs.
+- Refuse bot startup unless allowed Telegram user IDs are configured.
 
 ## Phase 3: Chat Selection Through Bot
 
 - Show available chats in the private bot chat.
-- Let users select chats for import.
+- Import selected chats through explicit `/import <chat_id>` commands.
 - Persist selected chat metadata locally.
 - Make imports explicit and reversible.
 
 ## Phase 4: Reports Inside Bot
 
-- Run local metrics from normalized domain objects and send reports back through the bot.
-- Avoid message text in reports unless explicitly requested.
+- Run local metrics and Event Engine v0 summaries from normalized domain objects and send compact summaries through the bot.
+- Avoid message text in bot reports.
 - Keep report generation local-first.
 
 ## Phase 5: Reminders And Live Updates

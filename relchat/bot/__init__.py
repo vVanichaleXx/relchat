@@ -1,5 +1,5 @@
-"""Bot interface boundary.
+"""Telegram Bot interface boundary.
 
-This package is reserved for the future Telegram bot user interface. Transport
-code here should depend on application services, not on importer internals.
+The bot is only a user interface. Telegram history access remains in the
+Telethon / MTProto importer and local repositories.
 """

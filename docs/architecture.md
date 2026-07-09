@@ -26,7 +26,7 @@ relchat/
   events/        Rule-based source-agnostic event extraction
   memory/        Future durable memory boundary
   reports/       Future report rendering boundary
-  bot/           Future bot user interface boundary
+  bot/           Telegram Bot user interface boundary
   cli/           Developer/debug command-line interface
   utils/         Low-level helpers with no product logic
   config.py      Application settings loaded from env and .env
@@ -113,12 +113,14 @@ No report implementation is included yet.
 
 ### `bot/`
 
-Reserved for the future Telegram Bot interface. The bot will become the primary
-user interface after setup, but it should remain an interface layer. It should
-call application services and render reports. It should not contain importer,
-storage, analytics, or business rules.
+Owns the Telegram Bot interface. The bot is an interface layer only: it handles
+commands, access control, compact formatting, and Telegram message chunking. It
+calls the existing Telethon importer, SQLite repositories, analytics, and event
+engine.
 
-No bot logic is included yet.
+The Bot API must not be treated as a data access layer. It cannot read a user's
+private chat history by itself. RelChat imports selected chats through the local
+user-authorized Telethon / MTProto session.
 
 ### `cli/`
 
@@ -205,6 +207,26 @@ SQLite
   -> relchat.cli formatting
 ```
 
+Current bot list/import flow:
+
+```text
+Telegram Bot command
+  -> relchat.bot handlers
+  -> relchat.telegram.importer over Telethon/MTProto
+  -> relchat.database.repositories
+  -> relchat.bot formatting
+```
+
+Current bot metrics/event flow:
+
+```text
+Telegram Bot command
+  -> relchat.bot handlers
+  -> SQLite repositories
+  -> analytics or events
+  -> relchat.bot privacy-safe formatting
+```
+
 Target product flow:
 
 ```text
@@ -256,6 +278,8 @@ Sensitive local state:
 - Message text in SQLite is sensitive conversation content.
 - Conversation events must not store message text. They may reference source
   message IDs and carry non-text metadata such as thresholds or gap duration.
+- Telegram bot tokens are secrets and must not be logged or committed.
+- `RELCHAT_ALLOWED_USER_IDS` must be configured before the bot starts.
 
 Recommended encryption boundaries:
 
@@ -292,6 +316,7 @@ Import isolation:
 - Raw payload retention, media downloads, live updates, cloud sync, AI provider
   calls, and exports require opt-in behavior and updated security docs before
   implementation.
+- Bot output must stay compact and must not include message text by default.
 
 ## Developer Experience
 

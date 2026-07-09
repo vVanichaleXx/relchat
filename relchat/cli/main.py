@@ -82,6 +82,12 @@ def build_parser() -> argparse.ArgumentParser:
     )
     events_summary.set_defaults(handler=cmd_events_summary)
 
+    bot = sub.add_parser("bot", help="Telegram Bot interface")
+    bot.set_defaults(handler=cmd_bot_run)
+    bot_sub = bot.add_subparsers(dest="bot_command")
+    bot_run = bot_sub.add_parser("run", help="Run the Telegram Bot interface")
+    bot_run.set_defaults(handler=cmd_bot_run)
+
     return parser
 
 
@@ -193,6 +199,12 @@ def cmd_events_summary(args: argparse.Namespace) -> int:
     events = extract_events(messages)
     print_events_summary(args.chat_id, messages, events, show_text=args.show_text)
     return 0
+
+
+def cmd_bot_run(args: argparse.Namespace) -> int:
+    from relchat.bot.app import run_bot
+
+    return run_bot()
 
 
 def parse_since(value: str | None) -> datetime | None:

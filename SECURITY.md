@@ -13,6 +13,8 @@ RelChat handles highly sensitive personal conversation data. Treat every feature
 - Store only normalized data that is needed for the current feature.
 - Make privacy-sensitive behavior explicit through CLI flags, configuration, and documentation.
 - Keep Telegram-specific transport objects out of analytics, memory, reports, and future AI layers.
+- Keep the Telegram Bot API as an interface only. It must not be used to read private chat history.
+- Run the bot only with `RELCHAT_ALLOWED_USER_IDS` configured. An empty list must refuse startup.
 
 ## Local Secrets
 
@@ -21,6 +23,19 @@ Telethon sessions grant access to the authorized Telegram account. Keep them loc
 Telegram sessions should remain separate from normalized message storage. Do not
 copy session contents into SQLite, reports, logs, exports, analytics fixtures, or
 debug output.
+
+Telegram bot tokens are also secrets. Store them in `.env` or the environment,
+never in git, issue reports, terminal transcripts, or generated docs.
+
+## Bot Access Control
+
+Bot Interface v0 only responds to configured Telegram user IDs and replies only
+in private bot chats. It calls the existing local Telethon importer,
+repositories, analytics, and event engine. It must not expose a public bot, raw
+Telegram payloads, session contents, phone numbers, or message text.
+
+The Bot API cannot read private Telegram chat history. RelChat imports selected
+chats through the local user-authorized MTProto session instead.
 
 ## Sensitive Data Boundaries
 

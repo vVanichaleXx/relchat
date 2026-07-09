@@ -26,9 +26,24 @@ def load_dotenv(path: Path | None = None) -> None:
 class Settings:
     api_id: int | None
     api_hash: str | None
+    telegram_bot_token: str | None
+    allowed_user_ids: frozenset[int]
     data_dir: Path
     db_path: Path
     session_path: Path
+
+
+def parse_allowed_user_ids(value: str | None) -> frozenset[int]:
+    if not value or not value.strip():
+        return frozenset()
+    user_ids = set()
+    for item in value.replace(",", " ").split():
+        if not item.isdigit():
+            raise SystemExit(
+                "Invalid RELCHAT_ALLOWED_USER_IDS. Use comma-separated numeric Telegram user IDs."
+            )
+        user_ids.add(int(item))
+    return frozenset(user_ids)
 
 
 def get_settings() -> Settings:
@@ -39,9 +54,13 @@ def get_settings() -> Settings:
     api_id_raw = os.environ.get("TELEGRAM_API_ID")
     api_id = int(api_id_raw) if api_id_raw and api_id_raw.isdigit() else None
     api_hash = os.environ.get("TELEGRAM_API_HASH")
+    telegram_bot_token = os.environ.get("TELEGRAM_BOT_TOKEN") or None
+    allowed_user_ids = parse_allowed_user_ids(os.environ.get("RELCHAT_ALLOWED_USER_IDS"))
     return Settings(
         api_id=api_id,
         api_hash=api_hash,
+        telegram_bot_token=telegram_bot_token,
+        allowed_user_ids=allowed_user_ids,
         data_dir=data_dir,
         db_path=db_path,
         session_path=session_path,

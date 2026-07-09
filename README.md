@@ -4,9 +4,9 @@ RelChat is a privacy-first conversation intelligence platform.
 
 Telegram is the first supported source. The architecture is designed so future importers can support WhatsApp, Signal, Discord, Messenger, JSON exports, TXT exports, email, and other sources without tying the core product logic to Telegram.
 
-The current codebase is a local CLI foundation. It uses Telethon / MTProto to access Telegram only after the user authorizes their own Telegram account, imports selected chats into a local SQLite database, and computes basic conversation metrics over normalized domain objects.
+The current codebase is a local CLI foundation plus a Telegram Bot interface v0. It uses Telethon / MTProto to access Telegram only after the user authorizes their own Telegram account, imports selected chats into a local SQLite database, and computes basic conversation metrics over normalized domain objects.
 
-The product direction is a private Telegram bot experience where each user interacts with their own bot chat to connect an account, choose chats, import messages, run analysis, and receive reports. Full bot logic is intentionally not implemented yet.
+The bot is only a user interface. It does not read private chats through the Bot API. It calls the same local importers, repositories, analytics, and event engine used by the CLI.
 
 ## Privacy Baseline
 
@@ -15,6 +15,8 @@ The product direction is a private Telegram bot experience where each user inter
 - Telegram sessions, SQLite databases, exports, logs, and `.env` files must never be committed.
 - Raw Telegram payload storage is disabled in the MVP.
 - The CLI does not print message text by default. Use `--show-text` only when you explicitly want local text snippets in the terminal.
+- The bot refuses to start unless `RELCHAT_ALLOWED_USER_IDS` is configured.
+- Bot replies do not include message text, raw payloads, secrets, phone numbers, or session contents.
 - No AI analysis, dashboard, web UI, cloud sync, or hosted service is included in this foundation.
 
 Read [SECURITY.md](SECURITY.md) and [PRIVACY.md](PRIVACY.md) before adding features that touch personal data.
@@ -38,7 +40,7 @@ Current package boundaries:
 - `relchat/events`: future event extraction boundary
 - `relchat/memory`: future memory boundary
 - `relchat/reports`: future report boundary
-- `relchat/bot`: future bot interface boundary
+- `relchat/bot`: Telegram Bot interface boundary
 - `relchat/cli`: developer/debug CLI
 - `relchat/utils`: low-level shared helpers
 
@@ -68,6 +70,15 @@ TELEGRAM_API_ID=
 TELEGRAM_API_HASH=
 ```
 
+To run the Telegram Bot interface, also fill in:
+
+```text
+TELEGRAM_BOT_TOKEN=
+RELCHAT_ALLOWED_USER_IDS=123456789
+```
+
+`RELCHAT_ALLOWED_USER_IDS` is a comma-separated list of numeric Telegram user IDs. If it is empty, the bot refuses to start.
+
 ## Local CLI Commands
 
 Initialize local SQLite:
@@ -79,7 +90,7 @@ python3 -m relchat db init
 Log in with Telegram Client API / MTProto:
 
 ```bash
-python3 -m relchat auth login --phone +1234567890
+python3 -m relchat auth login --phone <phone>
 ```
 
 List chats:
@@ -123,6 +134,36 @@ Event summaries also hide message text by default:
 ```bash
 python3 -m relchat events summary <chat_id> --show-text
 ```
+
+## Telegram Bot Interface v0
+
+Run the private bot UI:
+
+```bash
+python3 -m relchat bot
+```
+
+Equivalent explicit form:
+
+```bash
+python3 -m relchat bot run
+```
+
+Available bot commands:
+
+```text
+/start
+/help
+/status
+/chats [private|groups|channels] [limit]
+/import <chat_id>
+/metrics <chat_id>
+/events <chat_id>
+```
+
+`/import <chat_id>` uses safe defaults: `since=90d` and `limit=5000`. `/chats` defaults to 30 rows and supports examples such as `/chats private 50`, `/chats groups 50`, and `/chats channels 50`.
+
+The bot requires the same local MTProto setup as the CLI. Run `python3 -m relchat auth login --phone <phone>` before using bot commands that list or import Telegram conversations.
 
 ## Implemented Metrics
 
