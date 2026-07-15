@@ -15,6 +15,17 @@ class ConversationRef:
     conversation_type: str
     title: str | None = None
     last_message_at: str | None = None
+    username: str | None = None
+    folder_id: int | None = None
+    unread_count: int = 0
+
+
+@dataclass(frozen=True)
+class DialogFolder:
+    """A Telegram dialog folder/filter exposed by the MTProto importer."""
+
+    folder_id: int
+    title: str
 
 
 @dataclass(frozen=True)

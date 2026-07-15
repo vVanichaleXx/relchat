@@ -1,0 +1,155 @@
+from __future__ import annotations
+
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
+from telegram.ext import ContextTypes
+
+from relchat.bot.formatters import (
+    format_analysis_review,
+    format_destructive_confirmation,
+    format_failed_jobs,
+    format_report_list,
+    format_report_overview,
+    format_report_section,
+    format_reports_home,
+)
+from relchat.bot.handlers.common import bot_user_id, edit_or_reply, get_context_settings
+from relchat.bot.keyboards import (
+    delete_report_confirmation_keyboard,
+    report_list_keyboard,
+    report_sections_keyboard,
+    reports_home_keyboard,
+    review_keyboard,
+)
+from relchat.bot.state import get_flow
+from relchat.database.repositories import (
+    clear_reports,
+    delete_report,
+    get_report,
+    get_user_settings,
+    list_analysis_jobs,
+    list_reports,
+    set_report_favorite,
+)
+from relchat.database.sqlite import connect, init_db
+
+
+async def show_reports_home(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    settings = get_context_settings(context)
+    init_db(settings.db_path)
+    user_id = bot_user_id(update)
+    with connect(settings.db_path) as conn:
+        counts = {
+            "reports": len(list_reports(conn, user_id, limit=1000)),
+            "favorite_reports": len(list_reports(conn, user_id, favorites=True, limit=1000)),
+            "failed_jobs": len(list_analysis_jobs(conn, user_id, statuses=["failed"], limit=1000)),
+        }
+        language = get_user_settings(conn, user_id).get("language", "en")
+    await edit_or_reply(update, format_reports_home(counts), reply_markup=reports_home_keyboard(language))
+
+
+async def handle_reports_callback(update: Update, context: ContextTypes.DEFAULT_TYPE, parts: list[str]) -> bool:
+    if len(parts) >= 3 and parts[1] == "nav" and parts[2] == "reports":
+        await show_reports_home(update, context)
+        return True
+    if len(parts) < 2 or parts[1] not in {"reports", "rep"}:
+        return False
+    if parts[1] == "reports":
+        await handle_reports_home_action(update, context, parts)
+        return True
+    if parts[1] == "rep":
+        await handle_report_action(update, context, parts)
+        return True
+    return False
+
+
+async def handle_reports_home_action(update: Update, context: ContextTypes.DEFAULT_TYPE, parts: list[str]) -> None:
+    settings = get_context_settings(context)
+    user_id = bot_user_id(update)
+    with connect(settings.db_path) as conn:
+        language = get_user_settings(conn, user_id).get("language", "en")
+        if len(parts) >= 4 and parts[2] == "list":
+            section = parts[3]
+            if section == "failed":
+                jobs = list_analysis_jobs(conn, user_id, statuses=["failed"], limit=10)
+                await edit_or_reply(update, format_failed_jobs(jobs), reply_markup=reports_home_keyboard(language))
+                return
+            reports = list_reports(conn, user_id, favorites=section == "favorites", limit=20)
+            title = {
+                "latest": "Latest reports",
+                "by_chat": "Reports by chat",
+                "favorites": "Favorite reports",
+            }.get(section, "Reports")
+            await edit_or_reply(update, format_report_list(title, reports, language=language), reply_markup=report_list_keyboard(reports, language=language))
+            return
+    if len(parts) >= 3 and parts[2] == "clear":
+        await edit_or_reply(
+            update,
+            format_destructive_confirmation("clear report history"),
+            reply_markup=InlineKeyboardMarkup(
+                [
+                    [InlineKeyboardButton("Clear report history", callback_data="rc:reports:clear_confirm")],
+                    [InlineKeyboardButton("Cancel", callback_data="rc:nav:reports")],
+                ]
+            ),
+        )
+        return
+    if len(parts) >= 3 and parts[2] == "clear_confirm":
+        with connect(settings.db_path) as conn:
+            clear_reports(conn, user_id)
+        await show_reports_home(update, context)
+
+
+async def handle_report_action(update: Update, context: ContextTypes.DEFAULT_TYPE, parts: list[str]) -> None:
+    if len(parts) < 4:
+        return
+    action = parts[2]
+    report_id = parts[3]
+    settings = get_context_settings(context)
+    user_id = bot_user_id(update)
+    with connect(settings.db_path) as conn:
+        report = get_report(conn, report_id)
+        language = get_user_settings(conn, user_id).get("language", "en")
+    if not report or report["bot_user_id"] != user_id:
+        await edit_or_reply(update, "This local report is no longer available.")
+        return
+    if action == "open":
+        await edit_or_reply(update, format_report_overview(report), reply_markup=report_sections_keyboard(report, language=language))
+        return
+    if action == "sec":
+        section = parts[4] if len(parts) >= 5 else "overview"
+        await edit_or_reply(update, format_report_section(report, section), reply_markup=report_sections_keyboard(report, language=language))
+        return
+    if action == "fav":
+        with connect(settings.db_path) as conn:
+            set_report_favorite(conn, report_id, not report.get("is_favorite"))
+            report = get_report(conn, report_id) or report
+        await edit_or_reply(update, format_report_overview(report), reply_markup=report_sections_keyboard(report, language=language))
+        return
+    if action == "delete":
+        await edit_or_reply(
+            update,
+            format_destructive_confirmation("delete this local report"),
+            reply_markup=delete_report_confirmation_keyboard(report_id, language=language),
+        )
+        return
+    if action == "delete_confirm":
+        with connect(settings.db_path) as conn:
+            delete_report(conn, report_id, user_id)
+        await show_reports_home(update, context)
+        return
+    if action == "again":
+        flow = get_flow(context.user_data)
+        flow.clear()
+        flow.update(
+            {
+                "source": report["source"],
+                "chat_id": report["chat_id"],
+                "chat_title": report["chat_title"],
+                "period_id": report["period_id"],
+                "period_label": report["period_label"],
+                "period_start": report["period_start"],
+                "period_end": report["period_end"],
+                "modules": report["modules"],
+            }
+        )
+        await edit_or_reply(update, format_analysis_review(flow), reply_markup=review_keyboard(language))

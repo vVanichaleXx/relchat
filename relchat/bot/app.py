@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from relchat.bot.security import BotSecurityError, validate_bot_startup
 from relchat.config import Settings, get_settings
+from relchat.database.repositories import mark_stale_running_jobs_failed
+from relchat.database.sqlite import connect, init_db
 
 
 def import_application_builder():
@@ -24,6 +26,10 @@ def run_bot(settings: Settings | None = None) -> int:
 
     ApplicationBuilder = import_application_builder()
     from relchat.bot.handlers import register_handlers
+
+    init_db(settings.db_path)
+    with connect(settings.db_path) as conn:
+        mark_stale_running_jobs_failed(conn)
 
     application = ApplicationBuilder().token(settings.telegram_bot_token).build()
     application.bot_data["settings"] = settings

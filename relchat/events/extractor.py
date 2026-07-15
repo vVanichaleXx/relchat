@@ -41,6 +41,15 @@ FOLLOW_UP_PATTERNS = [
     )
 ]
 
+REMINDER_PATTERNS = [
+    re.compile(
+        r"\b(remind me|don't forget|dont forget|remember to|deadline|due|exam|test|meeting|"
+        r"appointment|trip|flight|train|birthday|anniversary|interview|presentation|"
+        r"work event|call me|ping me)\b",
+        re.IGNORECASE,
+    )
+]
+
 
 def extract_events(messages: Sequence[Message]) -> list[ConversationEvent]:
     ordered = sorted(messages, key=message_sort_key)
@@ -96,6 +105,7 @@ def extract_candidate_events(message: Message, text: str) -> list[ConversationEv
         ("promise_candidate", PROMISE_PATTERNS),
         ("health_candidate", HEALTH_PATTERNS),
         ("follow_up_candidate", FOLLOW_UP_PATTERNS),
+        ("reminder_candidate", REMINDER_PATTERNS),
     ]
     events = []
     for event_type, patterns in candidates:

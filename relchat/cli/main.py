@@ -88,6 +88,13 @@ def build_parser() -> argparse.ArgumentParser:
     bot_run = bot_sub.add_parser("run", help="Run the Telegram Bot interface")
     bot_run.set_defaults(handler=cmd_bot_run)
 
+    ux_audit = sub.add_parser("ux-audit", help="Developer UX audit log commands")
+    ux_audit_sub = ux_audit.add_subparsers(dest="ux_audit_command")
+    ux_audit_export = ux_audit_sub.add_parser("export", help="Export a safe readable UX audit report")
+    ux_audit_export.add_argument("--limit", type=int, default=None, help="Maximum recent events to include")
+    ux_audit_export.add_argument("--path", default=None, help="Audit JSONL path. Defaults to RELCHAT_UX_AUDIT_PATH.")
+    ux_audit_export.set_defaults(handler=cmd_ux_audit_export)
+
     return parser
 
 
@@ -205,6 +212,21 @@ def cmd_bot_run(args: argparse.Namespace) -> int:
     from relchat.bot.app import run_bot
 
     return run_bot()
+
+
+def cmd_ux_audit_export(args: argparse.Namespace) -> int:
+    from pathlib import Path
+
+    from relchat.bot.services.ux_audit import format_ux_audit_report, load_ux_audit_events
+
+    settings = get_settings()
+    path = Path(args.path).expanduser() if args.path else settings.ux_audit_path
+    if path is None:
+        print("UX audit path is not configured.")
+        return 1
+    events = load_ux_audit_events(path, limit=args.limit)
+    print(format_ux_audit_report(events))
+    return 0
 
 
 def parse_since(value: str | None) -> datetime | None:

@@ -31,6 +31,10 @@ class Settings:
     data_dir: Path
     db_path: Path
     session_path: Path
+    ux_audit_enabled: bool = False
+    ux_audit_max_events: int = 1000
+    ux_audit_include_user_text: bool = False
+    ux_audit_path: Path | None = None
 
 
 def parse_allowed_user_ids(value: str | None) -> frozenset[int]:
@@ -46,11 +50,33 @@ def parse_allowed_user_ids(value: str | None) -> frozenset[int]:
     return frozenset(user_ids)
 
 
+def parse_bool(value: str | None, *, default: bool = False) -> bool:
+    if value is None or not value.strip():
+        return default
+    normalized = value.strip().casefold()
+    if normalized in {"1", "true", "yes", "on"}:
+        return True
+    if normalized in {"0", "false", "no", "off"}:
+        return False
+    return default
+
+
+def parse_positive_int(value: str | None, *, default: int) -> int:
+    if value is None or not value.strip():
+        return default
+    try:
+        parsed = int(value.strip())
+    except ValueError:
+        return default
+    return parsed if parsed > 0 else default
+
+
 def get_settings() -> Settings:
     load_dotenv()
     data_dir = Path(os.environ.get("RELCHAT_DATA_DIR", ROOT / "data")).expanduser()
     db_path = Path(os.environ.get("RELCHAT_DB_PATH", data_dir / "relchat.sqlite3")).expanduser()
     session_path = Path(os.environ.get("RELCHAT_SESSION_PATH", data_dir / "telegram.session")).expanduser()
+    ux_audit_path = Path(os.environ.get("RELCHAT_UX_AUDIT_PATH", data_dir / "logs" / "ux-audit.jsonl")).expanduser()
     api_id_raw = os.environ.get("TELEGRAM_API_ID")
     api_id = int(api_id_raw) if api_id_raw and api_id_raw.isdigit() else None
     api_hash = os.environ.get("TELEGRAM_API_HASH")
@@ -64,6 +90,10 @@ def get_settings() -> Settings:
         data_dir=data_dir,
         db_path=db_path,
         session_path=session_path,
+        ux_audit_enabled=parse_bool(os.environ.get("RELCHAT_UX_AUDIT_ENABLED"), default=False),
+        ux_audit_max_events=parse_positive_int(os.environ.get("RELCHAT_UX_AUDIT_MAX_EVENTS"), default=1000),
+        ux_audit_include_user_text=parse_bool(os.environ.get("RELCHAT_UX_AUDIT_INCLUDE_USER_TEXT"), default=False),
+        ux_audit_path=ux_audit_path,
     )
 
 

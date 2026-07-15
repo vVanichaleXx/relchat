@@ -17,6 +17,9 @@ def normalize_dialog(dialog: Any) -> ConversationRef:
         conversation_type=dialog_type(dialog),
         title=dialog.name,
         last_message_at=iso_or_none(getattr(getattr(dialog, "message", None), "date", None)),
+        username=dialog_username(dialog),
+        folder_id=dialog_folder_id(dialog),
+        unread_count=safe_int(getattr(dialog, "unread_count", 0)),
     )
 
 
@@ -26,6 +29,7 @@ def normalize_entity(entity: Any, fallback_id: str) -> ConversationRef:
         conversation_id=str(getattr(entity, "id", fallback_id)),
         conversation_type=entity_type(entity),
         title=display_name(entity),
+        username=getattr(entity, "username", None),
     )
 
 
@@ -94,6 +98,29 @@ def entity_type(entity: Any) -> str:
     if getattr(entity, "megagroup", False) or hasattr(entity, "participants_count"):
         return "group"
     return "unknown"
+
+
+def dialog_username(dialog: Any) -> str | None:
+    entity = getattr(dialog, "entity", None)
+    username = getattr(entity, "username", None)
+    return str(username) if username else None
+
+
+def dialog_folder_id(dialog: Any) -> int | None:
+    folder_id = getattr(dialog, "folder_id", None)
+    if folder_id is None:
+        return None
+    try:
+        return int(folder_id)
+    except (TypeError, ValueError):
+        return None
+
+
+def safe_int(value: Any) -> int:
+    try:
+        return int(value or 0)
+    except (TypeError, ValueError):
+        return 0
 
 
 def iso_or_none(value: Any | None) -> str | None:
