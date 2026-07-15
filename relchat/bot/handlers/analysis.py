@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+from importlib.util import find_spec
 from typing import Any
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
@@ -8,6 +9,9 @@ from telegram.ext import ContextTypes
 
 from relchat.bot.formatters import (
     format_analysis_review,
+    format_analysis_mode_prompt,
+    format_ai_consent_prompt,
+    format_ai_unavailable,
     format_category_prompt,
     format_chat_page,
     format_custom_end_prompt,
@@ -24,6 +28,8 @@ from relchat.bot.handlers.common import (
     get_context_settings,
 )
 from relchat.bot.keyboards import (
+    ai_consent_keyboard,
+    analysis_mode_keyboard,
     category_keyboard,
     chat_list_keyboard,
     custom_end_keyboard,
@@ -51,9 +57,11 @@ from relchat.bot.state import (
 )
 from relchat.core.models import ConversationRef, DialogFolder
 from relchat.database.repositories import (
+    accept_ai_consent,
     create_analysis_job,
     get_analysis_job,
     get_user_settings,
+    has_active_ai_consent,
     list_user_chats,
     save_user_chat,
 )
@@ -264,7 +272,13 @@ async def handle_analysis_step_callback(update: Update, context: ContextTypes.DE
         flow = get_flow(context.user_data)
         flow["period_end"] = None
         flow["period_label"] = period_label("custom", custom_start=flow.get("period_start_date"))
-        await show_module_selection(update, context)
+        await show_analysis_mode(update, context)
+        return
+    if len(parts) >= 4 and parts[2] == "mode":
+        await choose_analysis_mode(update, context, parts[3])
+        return
+    if len(parts) >= 4 and parts[2] == "ai_consent":
+        await handle_ai_consent(update, context, parts[3])
         return
     if len(parts) >= 4 and parts[2] == "module":
         toggle_module(context, parts[3])
@@ -314,7 +328,7 @@ async def set_period(update: Update, context: ContextTypes.DEFAULT_TYPE, period_
             "period_end": None,
         }
     )
-    await show_module_selection(update, context)
+    await show_analysis_mode(update, context)
 
 
 async def show_module_selection(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -322,6 +336,62 @@ async def show_module_selection(update: Update, context: ContextTypes.DEFAULT_TY
     flow = get_flow(context.user_data)
     selected = list(flow.get("modules") or [])
     await edit_or_reply(update, format_module_selection(selected), reply_markup=module_keyboard(selected, language=language))
+
+
+async def show_analysis_mode(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    settings = get_context_settings(context)
+    language = get_language(update, context)
+    flow = get_flow(context.user_data)
+    ensure_default_modules(update, context, flow)
+    await edit_or_reply(
+        update,
+        format_analysis_mode_prompt(chat_title=flow.get("chat_title"), language=language),
+        reply_markup=analysis_mode_keyboard(ai_available=bool(settings.ai_enabled), language=language),
+    )
+
+
+async def choose_analysis_mode(update: Update, context: ContextTypes.DEFAULT_TYPE, mode: str) -> None:
+    flow = get_flow(context.user_data)
+    if mode == "local":
+        flow["analysis_mode"] = "local"
+        await create_and_start_job(update, context)
+        return
+    if mode != "ai":
+        await show_analysis_mode(update, context)
+        return
+    settings = get_context_settings(context)
+    language = get_language(update, context)
+    unavailable = ai_unavailable_reason(settings)
+    if unavailable:
+        await edit_or_reply(
+            update,
+            format_ai_unavailable(unavailable, language=language),
+            reply_markup=analysis_mode_keyboard(ai_available=False, language=language),
+        )
+        return
+    with connect(settings.db_path) as conn:
+        consent = has_active_ai_consent(conn, bot_user_id(update))
+    if not consent:
+        await edit_or_reply(update, format_ai_consent_prompt(language=language), reply_markup=ai_consent_keyboard(language))
+        return
+    flow["analysis_mode"] = "ai"
+    await create_and_start_job(update, context)
+
+
+async def handle_ai_consent(update: Update, context: ContextTypes.DEFAULT_TYPE, action: str) -> None:
+    flow = get_flow(context.user_data)
+    if action == "local":
+        flow["analysis_mode"] = "local"
+        await create_and_start_job(update, context)
+        return
+    if action != "accept":
+        await show_analysis_mode(update, context)
+        return
+    settings = get_context_settings(context)
+    with connect(settings.db_path) as conn:
+        accept_ai_consent(conn, bot_user_id(update))
+    flow["analysis_mode"] = "ai"
+    await create_and_start_job(update, context)
 
 
 def toggle_module(context: ContextTypes.DEFAULT_TYPE, module_id: str) -> None:
@@ -344,6 +414,7 @@ async def create_and_start_job(update: Update, context: ContextTypes.DEFAULT_TYP
         await edit_or_reply(update, "Choose a chat and time period first.")
         return
     modules = normalize_module_selection(list(flow.get("modules") or []))
+    analysis_mode = "ai" if flow.get("analysis_mode") == "ai" else "local"
     query = update.callback_query
     progress_chat_id = query.message.chat_id if query and query.message else None
     progress_message_id = query.message.message_id if query and query.message else None
@@ -361,6 +432,7 @@ async def create_and_start_job(update: Update, context: ContextTypes.DEFAULT_TYP
             modules=modules,
             progress_chat_id=progress_chat_id,
             progress_message_id=progress_message_id,
+            analysis_mode=analysis_mode,
         )
     clear_flow(context.user_data)
     await edit_or_reply(update, format_job_progress(job), reply_markup=job_progress_keyboard(job["job_id"], language=get_language(update, context)))
@@ -442,9 +514,30 @@ async def handle_analysis_text(update: Update, context: ContextTypes.DEFAULT_TYP
         flow["period_end_date"] = iso_date(parsed)
         flow["period_label"] = period_label("custom", custom_start=flow.get("period_start_date"), custom_end=flow.get("period_end_date"))
         context.user_data[AWAITING_TEXT] = None
-        await show_module_selection(update, context)
+        await show_analysis_mode(update, context)
         return True
     return False
+
+
+def ensure_default_modules(update: Update, context: ContextTypes.DEFAULT_TYPE, flow: dict[str, Any]) -> None:
+    if flow.get("modules"):
+        return
+    settings = get_context_settings(context)
+    with connect(settings.db_path) as conn:
+        configured = get_user_settings(conn, bot_user_id(update)).get("default_modules") or []
+    flow["modules"] = normalize_module_selection(list(configured))
+
+
+def ai_unavailable_reason(settings) -> str | None:
+    if not settings.ai_enabled:
+        return "ai_disabled"
+    if not settings.openai_api_key:
+        return "missing_api_key"
+    if not settings.ai_model:
+        return "missing_model"
+    if find_spec("openai") is None:
+        return "openai_sdk_missing"
+    return None
 
 
 def get_browser(context: ContextTypes.DEFAULT_TYPE) -> dict[str, Any]:

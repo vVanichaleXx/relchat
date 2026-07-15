@@ -279,78 +279,179 @@ def format_chat_home(
 
 def format_chat_home_view(view_model: dict[str, Any], *, language: str = "en") -> str:
     chat = view_model.get("chat") or {}
-    activity = view_model.get("activity") or {}
-    communication = view_model.get("communication") or {}
     attention = view_model.get("attention") or {}
     analysis = view_model.get("analysis") or {}
     state = view_model.get("state") or {}
     chat_type = chat.get("chat_type")
     title = sanitize_label(chat.get("title"), fallback=t(language, "chat_type_unknown"), limit=80)
-    identity = render_section(
-        None,
-        [
-            f"👤 {title}",
-            readable_chat_type(chat_type, language=language),
-            "",
-            render_status(
-                icon=str(state.get("icon") or "⚪"),
-                title=sanitize_label(state.get("title"), fallback=t(language, "status_no_analysis"), limit=60),
-                explanation=sanitize_label(state.get("explanation"), fallback=t(language, "empty"), limit=160),
-            ),
-            "",
-            render_field(
-                t(language, "chat_home_v4_last_activity"),
-                sanitize_label(activity.get("last_activity_label"), fallback=t(language, "not_available"), limit=40),
-            ),
-            "",
-            render_field(
-                chat_home_rhythm_title(chat_type, language=language),
-                sanitize_label(communication.get("rhythm_label"), fallback=t(language, "not_available"), limit=60),
-                communication_subtitle(communication, chat_type=chat_type, language=language),
-            ),
-            "",
-            render_field(
-                t(language, "chat_home_v4_trend"),
-                trend_line(activity, language=language),
-            ),
-        ],
-    )
-    attention_section = render_section(
-        t(language, "chat_home_v4_attention_section"),
-        [
-            render_field(
-                t(language, "chat_home_v4_next_reminder"),
-                next_reminder_line(attention, language=language),
-            ),
-            "",
-            render_field(
-                t(language, "chat_home_v4_followup_title"),
-                chat_home_attention_line(attention, language=language),
-            ),
-        ],
-    )
-    if analysis.get("has_report"):
-        analysis_section = render_section(
-            t(language, "chat_home_v4_latest_analysis_section"),
-            [
-                render_field(
-                    t(language, "chat_home_v4_latest_analysis_value"),
-                    sanitize_label(analysis.get("last_analysis_label"), fallback=t(language, "not_available"), limit=40),
-                    sanitize_label(analysis.get("last_period_label"), fallback=t(language, "not_available"), limit=40),
-                ),
-                "",
-                render_field(
-                    t(language, "report_confidence"),
-                    sanitize_label(analysis.get("data_confidence_label"), fallback=t(language, "not_available"), limit=40),
-                ),
-            ],
-        )
+    score = analysis.get("latest_score")
+    score_line = f"{float(score):.1f} / 10" if isinstance(score, (int, float)) else t(language, "not_available")
+    if chat_type in {"group", "channel"}:
+        score_title = t(language, "ai_activity_score")
     else:
-        analysis_section = render_empty_state(t(language, "chat_home_v4_no_analysis_title"), t(language, "chat_home_v4_no_analysis_body"))
-    lines = [DIVIDER, identity, DIVIDER, attention_section, DIVIDER, analysis_section, DIVIDER]
+        score_title = t(language, "ai_communication_score")
+    headline = sanitize_label(
+        state.get("headline") or state.get("explanation"),
+        fallback=t(language, "chat_home_v4_state_no_analysis"),
+        limit=180,
+    )
+    if not analysis.get("has_report") and not analysis.get("latest_score"):
+        headline = f"{headline} {t(language, 'chat_home_v4_no_analysis_body')}"
+    lines = [
+        title,
+        readable_chat_type(chat_type, language=language),
+        "",
+        headline,
+        "",
+        render_field(score_title, score_line, sanitize_label(analysis.get("score_confidence_label"), fallback=analysis.get("data_confidence_label") or t(language, "not_available"), limit=40)),
+        "",
+        render_field(
+            t(language, "chat_home_v4_last_analysis"),
+            sanitize_label(analysis.get("last_analysis_label"), fallback=t(language, "not_available"), limit=40),
+            sanitize_label(analysis.get("last_period_label"), fallback=t(language, "not_available"), limit=40),
+        ),
+        "",
+        render_field(t(language, "chat_home_v4_followup_title"), chat_home_attention_line(attention, language=language)),
+    ]
     if analysis.get("running"):
         lines.extend(["", t(language, "chat_home_running")])
     return "\n".join(lines)
+
+
+def format_chat_home_details_menu(*, language: str = "en") -> str:
+    return "\n\n".join([t(language, "chat_home_details_title"), t(language, "chat_home_details_body")])
+
+
+def format_analysis_mode_prompt(*, chat_title: str | None, language: str = "en") -> str:
+    return "\n\n".join(
+        [
+            t(language, "analysis_mode_title"),
+            sanitize_label(chat_title, fallback=t(language, "chat_type_unknown"), limit=80),
+            t(language, "analysis_mode_body"),
+        ]
+    )
+
+
+def format_ai_consent_prompt(*, language: str = "en") -> str:
+    return t(language, "ai_consent_prompt")
+
+
+def format_ai_unavailable(reason: str, *, language: str = "en") -> str:
+    key = {
+        "ai_disabled": "ai_error_disabled",
+        "missing_api_key": "ai_error_missing_key",
+        "missing_model": "ai_error_missing_model",
+        "openai_sdk_missing": "ai_error_sdk_missing",
+    }.get(reason, "ai_error_generic")
+    return "\n\n".join([t(language, key), t(language, "ai_offer_local")])
+
+
+def format_ai_result_overview(analysis: dict[str, Any], *, chat_title: str | None = None, language: str = "en") -> str:
+    result = analysis.get("result") or analysis
+    title = sanitize_label(chat_title or analysis.get("chat_title"), fallback=t(language, "chat_type_unknown"), limit=80)
+    score = result.get("overall_score")
+    confidence = result.get("score_confidence") or analysis.get("confidence") or "low"
+    positive = string_bullets(result.get("positive_patterns"), limit=3)
+    problems = string_bullets(result.get("problem_patterns"), limit=3)
+    advice = result.get("advice") or []
+    main_advice = advice[0] if advice else {}
+    lines = [
+        title,
+        "",
+        t(language, "ai_communication_analysis"),
+        "",
+        t(language, "ai_communication_score"),
+        f"{float(score):.1f} / 10" if isinstance(score, (int, float)) else t(language, "not_available"),
+        t(language, "ai_confidence_line", confidence=t(language, f"confidence_{confidence}") if confidence in {"low", "medium", "high"} else confidence),
+        "",
+        t(language, "ai_summary_title"),
+        sanitize_label(result.get("summary"), fallback=t(language, "not_available"), limit=700),
+        "",
+        t(language, "ai_strengths_title"),
+        positive or t(language, "not_available"),
+        "",
+        t(language, "ai_weakens_title"),
+        problems or t(language, "not_available"),
+        "",
+        t(language, "ai_main_advice"),
+        sanitize_label(main_advice.get("title"), fallback=t(language, "not_available"), limit=160),
+    ]
+    if main_advice.get("explanation"):
+        lines.append(sanitize_label(main_advice.get("explanation"), fallback="", limit=360))
+    return "\n".join(lines)
+
+
+def format_ai_result_section(analysis: dict[str, Any], section: str, *, language: str = "en") -> str:
+    result = analysis.get("result") or analysis
+    if section == "advice":
+        lines = [t(language, "ai_advice_title"), ""]
+        for item in (result.get("advice") or [])[:5]:
+            lines.extend([
+                f"{int(item.get('priority') or 1)}. {sanitize_label(item.get('title'), fallback=t(language, 'not_available'), limit=160)}",
+                sanitize_label(item.get("explanation"), fallback="", limit=500),
+            ])
+            if item.get("example"):
+                lines.append(f"{t(language, 'ai_example')}: {sanitize_label(item.get('example'), fallback='', limit=240)}")
+            lines.append("")
+        return "\n".join(lines).strip()
+    if section == "weak":
+        lines = [t(language, "ai_weak_replies_title"), "", t(language, "ai_no_raw_text_note"), ""]
+        weak = result.get("weak_reply_patterns") or []
+        if not weak:
+            lines.append(t(language, "ai_no_weak_replies"))
+            return "\n".join(lines)
+        for item in weak[:10]:
+            lines.extend(
+                [
+                    f"• {weak_reply_category_label(str(item.get('category')), language=language)}",
+                    f"{t(language, 'ai_severity')}: {sanitize_label(item.get('severity'), fallback='low', limit=20)}",
+                    sanitize_label(item.get("explanation"), fallback="", limit=500),
+                    f"{t(language, 'ai_reference')}: {sanitize_label(item.get('message_reference'), fallback=t(language, 'not_available'), limit=40)}",
+                    "",
+                ]
+            )
+        return "\n".join(lines).strip()
+    if section == "scores":
+        lines = [t(language, "ai_scores_title"), "", t(language, "ai_score_formula"), ""]
+        for key, row in (result.get("dimensions") or {}).items():
+            if not isinstance(row, dict):
+                continue
+            lines.extend(
+                [
+                    f"{dimension_label(str(key), language=language)}: {float(row.get('score') or 0):.1f} / 10",
+                    sanitize_label(row.get("explanation"), fallback="", limit=400),
+                    "",
+                ]
+            )
+        lines.extend([t(language, "ai_limitations_title"), string_bullets(result.get("limitations"), limit=6)])
+        return "\n".join(lines).strip()
+    lines = [t(language, "ai_full_analysis_title"), "", sanitize_label(result.get("summary"), fallback=t(language, "not_available"), limit=800), ""]
+    participants = result.get("participants") or {}
+    for participant_key, title_key in [("you", "ai_you_title"), ("other", "ai_other_title")]:
+        block = participants.get(participant_key) or {}
+        lines.extend(
+            [
+                t(language, title_key),
+                string_bullets(block.get("communication_style"), limit=5) or t(language, "not_available"),
+                "",
+            ]
+        )
+    lines.extend([t(language, "ai_strengths_title"), string_bullets(result.get("positive_patterns"), limit=6) or t(language, "not_available"), ""])
+    lines.extend([t(language, "ai_weakens_title"), string_bullets(result.get("problem_patterns"), limit=6) or t(language, "not_available")])
+    return "\n".join(lines).strip()
+
+
+def string_bullets(values: Any, *, limit: int) -> str:
+    rows = values if isinstance(values, list) else []
+    return "\n".join(f"• {sanitize_label(str(item), fallback='', limit=220)}" for item in rows[:limit] if str(item).strip())
+
+
+def dimension_label(key: str, *, language: str) -> str:
+    return t(language, f"ai_dimension_{key}")
+
+
+def weak_reply_category_label(key: str, *, language: str) -> str:
+    return t(language, f"ai_weak_{key}")
 
 
 def format_chat_home_loading(*, language: str = "en") -> str:
@@ -1754,8 +1855,14 @@ def format_reminder_detail(reminder: dict) -> str:
 
 
 def format_settings(settings: dict) -> str:
+    language = str(settings.get("language") or "en")
     retention = settings.get("data_retention_days")
     retention_label = f"{retention} days" if retention else "Keep until deleted"
+    consent_label = (
+        t(language, "settings_ai_consent_active")
+        if settings.get("ai_consent_active")
+        else t(language, "settings_ai_consent_not_active")
+    )
     return "\n".join(
         [
             "Settings",
@@ -1767,6 +1874,7 @@ def format_settings(settings: dict) -> str:
             f"Show technical details: {yes_no(bool(settings.get('show_technical_details')))}",
             f"Data retention: {retention_label}",
             f"Confirm before deleting local data: {yes_no(bool(settings.get('confirm_before_delete')))}",
+            f"{t(language, 'ai_consent_status')}: {consent_label}",
         ]
     )
 

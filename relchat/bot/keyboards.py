@@ -18,15 +18,8 @@ def main_keyboard(language: str = "en"):
     return InlineKeyboardMarkup(
         [
             [InlineKeyboardButton(t(language, "button_analyze"), callback_data="rc:nav:analyze")],
-            [
-                InlineKeyboardButton(t(language, "button_my_chats"), callback_data="rc:nav:chats"),
-                InlineKeyboardButton(t(language, "button_reports"), callback_data="rc:nav:reports"),
-            ],
-            [
-                InlineKeyboardButton(t(language, "button_reminders"), callback_data="rc:nav:reminders"),
-                InlineKeyboardButton(t(language, "button_settings"), callback_data="rc:nav:settings"),
-            ],
-            [InlineKeyboardButton(t(language, "button_help"), callback_data="rc:nav:help")],
+            [InlineKeyboardButton(t(language, "button_my_chats"), callback_data="rc:nav:chats")],
+            [InlineKeyboardButton(t(language, "button_settings"), callback_data="rc:nav:settings")],
         ]
     )
 
@@ -117,8 +110,7 @@ def chat_home_keyboard(chat: dict, *, has_report: bool, running: bool = False, l
 
     rows = []
     rows.extend(primary_chat_home_actions(has_report=has_report, running=running, language=language))
-    rows.extend(secondary_chat_home_actions(language=language))
-    rows.extend(utility_chat_home_actions(language=language))
+    rows.append([InlineKeyboardButton(t(language, "button_details"), callback_data="rc:home:details")])
     rows.append(
         [
             InlineKeyboardButton(t(language, "button_back"), callback_data="rc:home:back"),
@@ -162,6 +154,68 @@ def utility_chat_home_actions(*, language: str):
         ],
         [InlineKeyboardButton(t(language, "button_delete_local_data"), callback_data="rc:set:data")],
     ]
+
+
+def chat_home_details_menu_keyboard(*, language: str = "en"):
+    from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+
+    return InlineKeyboardMarkup(
+        [
+            [InlineKeyboardButton(t(language, "button_full_analysis"), callback_data="rc:home:sec:overview")],
+            [
+                InlineKeyboardButton(t(language, "button_timeline"), callback_data="rc:home:sec:timeline"),
+                InlineKeyboardButton(t(language, "button_activity"), callback_data="rc:home:sec:activity"),
+            ],
+            [
+                InlineKeyboardButton(t(language, "button_followups"), callback_data="rc:home:sec:followups"),
+                InlineKeyboardButton(t(language, "button_chat_reports_short"), callback_data="rc:home:sec:reports"),
+            ],
+            [InlineKeyboardButton(t(language, "button_chat_settings"), callback_data="rc:home:sec:settings")],
+            [InlineKeyboardButton(t(language, "button_chat_home"), callback_data="rc:home:open")],
+        ]
+    )
+
+
+def analysis_mode_keyboard(*, ai_available: bool, language: str = "en"):
+    from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+
+    rows = []
+    if ai_available:
+        rows.append([InlineKeyboardButton(t(language, "button_ai_analysis"), callback_data="rc:analysis:mode:ai")])
+    rows.append([InlineKeyboardButton(t(language, "button_local_analysis"), callback_data="rc:analysis:mode:local")])
+    rows.append([InlineKeyboardButton(t(language, "button_cancel"), callback_data=CB_CANCEL)])
+    return InlineKeyboardMarkup(rows)
+
+
+def ai_consent_keyboard(language: str = "en"):
+    from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+
+    return InlineKeyboardMarkup(
+        [
+            [InlineKeyboardButton(t(language, "button_continue_ai"), callback_data="rc:analysis:ai_consent:accept")],
+            [InlineKeyboardButton(t(language, "button_use_local_analysis"), callback_data="rc:analysis:ai_consent:local")],
+            [InlineKeyboardButton(t(language, "button_cancel"), callback_data=CB_CANCEL)],
+        ]
+    )
+
+
+def ai_result_keyboard(*, language: str = "en"):
+    from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+
+    return InlineKeyboardMarkup(
+        [
+            [
+                InlineKeyboardButton(t(language, "button_full_analysis"), callback_data="rc:home:ai:full"),
+                InlineKeyboardButton(t(language, "ai_advice_title"), callback_data="rc:home:ai:advice"),
+            ],
+            [
+                InlineKeyboardButton(t(language, "ai_weak_replies_title"), callback_data="rc:home:ai:weak"),
+                InlineKeyboardButton(t(language, "ai_scores_title"), callback_data="rc:home:ai:scores"),
+            ],
+            [InlineKeyboardButton(t(language, "button_update_analysis"), callback_data="rc:home:run")],
+            [InlineKeyboardButton(t(language, "button_chat_home"), callback_data="rc:home:open")],
+        ]
+    )
 
 
 def chat_home_section_keyboard(chat: dict, *, language: str = "en", section: str | None = None):
@@ -573,6 +627,7 @@ def settings_keyboard(settings: dict, *, language: str = "en"):
             [InlineKeyboardButton(f"Confirm before deleting: {confirm}", callback_data="rc:set:toggle:confirm_before_delete")],
             [InlineKeyboardButton("Reset onboarding", callback_data="rc:set:reset_onboarding")],
             [InlineKeyboardButton("Local data management", callback_data="rc:set:data")],
+            [InlineKeyboardButton(t(language, "button_revoke_ai_consent"), callback_data="rc:set:ai_consent_revoke")],
             [InlineKeyboardButton(t(language, "button_main"), callback_data=CB_MAIN)],
         ]
     )

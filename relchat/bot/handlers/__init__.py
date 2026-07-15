@@ -9,6 +9,12 @@ from relchat.bot.handlers.analysis import handle_analysis_callback, handle_analy
 from relchat.bot.handlers.chat_home import handle_chat_home_callback
 from relchat.bot.handlers.chats import handle_chats_callback, handle_chats_text
 from relchat.bot.handlers.common import edit_or_reply, require_access, show_safe_error, user_language
+from relchat.bot.handlers.debug import (
+    debug_clear_command,
+    debug_export_command,
+    debug_status_command,
+    handle_debug_callback,
+)
 from relchat.bot.handlers.developer import (
     chats_command,
     events_command,
@@ -36,6 +42,9 @@ def register_handlers(application: Any) -> None:
     application.add_handler(CommandHandler("import", import_command))
     application.add_handler(CommandHandler("metrics", metrics_command))
     application.add_handler(CommandHandler("events", events_command))
+    application.add_handler(CommandHandler("debug_status", debug_status_command))
+    application.add_handler(CommandHandler(["debug_export", "debug_log", "debug_report"], debug_export_command))
+    application.add_handler(CommandHandler("debug_clear", debug_clear_command))
     application.add_handler(CallbackQueryHandler(callback_router))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, text_router))
 
@@ -61,6 +70,7 @@ async def callback_router(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             handle_reports_callback,
             handle_reminders_callback,
             handle_settings_callback,
+            handle_debug_callback,
         ]:
             if await handler(update, context, parts):
                 return

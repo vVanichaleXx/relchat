@@ -35,6 +35,12 @@ class Settings:
     ux_audit_max_events: int = 1000
     ux_audit_include_user_text: bool = False
     ux_audit_path: Path | None = None
+    openai_api_key: str | None = None
+    ai_enabled: bool = False
+    ai_model: str | None = None
+    ai_max_messages: int = 1500
+    ai_max_chars: int = 120000
+    ai_timeout_seconds: int = 90
 
 
 def parse_allowed_user_ids(value: str | None) -> frozenset[int]:
@@ -82,6 +88,7 @@ def get_settings() -> Settings:
     api_hash = os.environ.get("TELEGRAM_API_HASH")
     telegram_bot_token = os.environ.get("TELEGRAM_BOT_TOKEN") or None
     allowed_user_ids = parse_allowed_user_ids(os.environ.get("RELCHAT_ALLOWED_USER_IDS"))
+    openai_api_key = os.environ.get("OPENAI_API_KEY") or None
     return Settings(
         api_id=api_id,
         api_hash=api_hash,
@@ -94,6 +101,12 @@ def get_settings() -> Settings:
         ux_audit_max_events=parse_positive_int(os.environ.get("RELCHAT_UX_AUDIT_MAX_EVENTS"), default=1000),
         ux_audit_include_user_text=parse_bool(os.environ.get("RELCHAT_UX_AUDIT_INCLUDE_USER_TEXT"), default=False),
         ux_audit_path=ux_audit_path,
+        openai_api_key=openai_api_key,
+        ai_enabled=parse_bool(os.environ.get("RELCHAT_AI_ENABLED"), default=False),
+        ai_model=os.environ.get("RELCHAT_AI_MODEL") or None,
+        ai_max_messages=parse_positive_int(os.environ.get("RELCHAT_AI_MAX_MESSAGES"), default=1500),
+        ai_max_chars=parse_positive_int(os.environ.get("RELCHAT_AI_MAX_CHARS"), default=120000),
+        ai_timeout_seconds=parse_positive_int(os.environ.get("RELCHAT_AI_TIMEOUT_SECONDS"), default=90),
     )
 
 

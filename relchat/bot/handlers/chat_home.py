@@ -6,9 +6,12 @@ from telegram import Update
 from telegram.ext import ContextTypes
 
 from relchat.bot.formatters import (
+    format_ai_result_overview,
+    format_ai_result_section,
     format_chat_overview,
     format_chat_overview_details,
     format_chat_home,
+    format_chat_home_details_menu,
     format_chat_home_section,
     format_chat_home_loading,
     format_period_prompt,
@@ -20,7 +23,9 @@ from relchat.bot.formatters import (
 )
 from relchat.bot.handlers.common import bot_user_id, edit_or_reply, get_context_settings
 from relchat.bot.keyboards import (
+    ai_result_keyboard,
     chat_home_keyboard,
+    chat_home_details_menu_keyboard,
     chat_home_reports_keyboard,
     chat_home_section_keyboard,
     main_keyboard,
@@ -36,7 +41,7 @@ from relchat.bot.services.timeline_service import (
     render_timeline_chart,
 )
 from relchat.bot.state import get_flow, JOB_RUNNING_STATES
-from relchat.database.repositories import get_user_settings, list_analysis_jobs, list_messages, list_reminders, list_reports
+from relchat.database.repositories import get_user_settings, latest_ai_analysis_for_chat, list_analysis_jobs, list_messages, list_reminders, list_reports
 from relchat.database.sqlite import connect, init_db
 
 
@@ -62,6 +67,12 @@ async def show_chat_home(
         await edit_or_reply(update, format_chat_home_loading(language=language))
     with connect(settings.db_path) as conn:
         reports = list_reports(conn, user_id, chat_id=chat["chat_id"], limit=2)
+        latest_ai = latest_ai_analysis_for_chat(
+            conn,
+            user_id,
+            source=chat.get("source") or "telegram",
+            chat_id=chat["chat_id"],
+        )
         messages = list_messages(conn, chat["chat_id"], source=chat.get("source") or "telegram")
         reminders = reminders_for_chat(conn, user_id, chat, limit=1000)
         running = is_analysis_running(conn, user_id, chat)
@@ -73,6 +84,12 @@ async def show_chat_home(
         running=running,
         language=language,
     )
+    if latest_ai:
+        view_model["analysis"]["latest_score"] = latest_ai.get("overall_score")
+        confidence = latest_ai.get("confidence") or "low"
+        view_model["analysis"]["score_confidence_label"] = t(language, f"confidence_{confidence}") if confidence in {"low", "medium", "high"} else confidence
+        view_model["analysis"]["last_analysis_label"] = latest_ai.get("created_at") or view_model["analysis"].get("last_analysis_label")
+        view_model["analysis"]["last_period_label"] = latest_ai.get("period_label") or view_model["analysis"].get("last_period_label")
     context.user_data[CHAT_HOME_STATE] = chat_home_state(chat)
     if parent is not None:
         context.user_data[CHAT_HOME_PARENT] = parent
@@ -113,6 +130,9 @@ async def handle_chat_home_callback(update: Update, context: ContextTypes.DEFAUL
         return True
     if action == "details":
         await show_chat_home_details(update, context)
+        return True
+    if action == "ai" and len(parts) >= 4:
+        await show_ai_analysis_section(update, context, parts[3])
         return True
     if action == "report" and len(parts) >= 4:
         await open_chat_home_report(update, context, parts[3])
@@ -310,21 +330,37 @@ async def show_chat_home_details(update: Update, context: ContextTypes.DEFAULT_T
     user_id = bot_user_id(update)
     with connect(settings.db_path) as conn:
         language = get_user_settings(conn, user_id).get("language", "en")
-        reports = list_reports(conn, user_id, chat_id=chat["chat_id"], limit=2)
-        report = reports[0] if reports else None
-        previous_report = reports[1] if len(reports) > 1 else None
-        confirmed_reminders = confirmed_reminder_count(conn, user_id, chat)
     await edit_or_reply(
         update,
-        format_chat_overview_details(
-            report,
-            previous_report=previous_report,
-            chat=chat,
-            confirmed_reminders=confirmed_reminders,
-            language=language,
-        ),
-        reply_markup=chat_home_section_keyboard(chat, language=language),
+        format_chat_home_details_menu(language=language),
+        reply_markup=chat_home_details_menu_keyboard(language=language),
     )
+
+
+async def show_ai_analysis_section(update: Update, context: ContextTypes.DEFAULT_TYPE, section: str) -> None:
+    chat = current_chat(context)
+    if chat is None:
+        await show_expired_navigation(update, context)
+        return
+    settings = get_context_settings(context)
+    user_id = bot_user_id(update)
+    with connect(settings.db_path) as conn:
+        language = get_user_settings(conn, user_id).get("language", "en")
+        analysis = latest_ai_analysis_for_chat(
+            conn,
+            user_id,
+            source=chat.get("source") or "telegram",
+            chat_id=chat["chat_id"],
+        )
+    if not analysis:
+        await edit_or_reply(update, t(language, "empty_no_report"), reply_markup=chat_home_section_keyboard(chat, language=language))
+        return
+    text = (
+        format_ai_result_overview(analysis, chat_title=chat.get("title"), language=language)
+        if section == "overview"
+        else format_ai_result_section(analysis, section, language=language)
+    )
+    await edit_or_reply(update, text, reply_markup=ai_result_keyboard(language=language))
 
 
 async def open_chat_home_report(update: Update, context: ContextTypes.DEFAULT_TYPE, value: str) -> None:

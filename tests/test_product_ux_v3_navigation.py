@@ -123,18 +123,21 @@ def overview_report(
 
 
 class ProductUxV3NavigationTest(unittest.IsolatedAsyncioTestCase):
-    def test_main_menu_has_six_primary_actions_and_is_localized(self) -> None:
+    def test_main_menu_has_three_primary_actions_and_is_localized(self) -> None:
         english = main_keyboard("en")
         russian = main_keyboard("ru")
 
         english_labels = [button.text for row in english.inline_keyboard for button in row]
         russian_labels = [button.text for row in russian.inline_keyboard for button in row]
 
-        self.assertEqual(len(english_labels), 6)
+        self.assertEqual(len(english_labels), 3)
         self.assertIn("Analyze a chat", english_labels)
-        self.assertIn("Follow-ups", english_labels)
+        self.assertIn("My chats", english_labels)
+        self.assertIn("Settings", english_labels)
+        self.assertNotIn("Reports", english_labels)
+        self.assertNotIn("Help", english_labels)
         self.assertIn("Проанализировать чат", russian_labels)
-        self.assertIn("Напоминания", russian_labels)
+        self.assertIn("Мои чаты", russian_labels)
 
     def test_private_group_channel_chat_home_variants(self) -> None:
         private_text = format_chat_home(chat("one_to_one"), report=report(), pending_followups=2, running=False, language="en")
@@ -142,11 +145,12 @@ class ProductUxV3NavigationTest(unittest.IsolatedAsyncioTestCase):
         channel_text = format_chat_home(chat("channel"), report=report(), pending_followups=0, running=False, language="en")
 
         self.assertIn("Person", private_text)
-        self.assertIn("Needs attention", private_text)
+        self.assertIn("Communication score", private_text)
+        self.assertIn("2 follow-ups", private_text)
         self.assertIn("Group", group_text)
-        self.assertIn("Group activity rhythm", group_text)
+        self.assertIn("Activity score", group_text)
         self.assertIn("Channel", channel_text)
-        self.assertIn("Posting cadence", channel_text)
+        self.assertIn("Activity score", channel_text)
 
         channel_buttons = [button.text for row in chat_home_keyboard(chat("channel"), has_report=True).inline_keyboard for button in row]
         self.assertNotIn("Response rhythm", channel_buttons)
@@ -165,9 +169,9 @@ class ProductUxV3NavigationTest(unittest.IsolatedAsyncioTestCase):
         rendered = format_chat_home(chat(), report=report(), pending_followups=1, running=False, language="ru")
 
         self.assertIn("Человек", rendered)
-        self.assertIn("Требует внимания", rendered)
-        self.assertIn("Ритм общения", rendered)
-        self.assertNotIn("Needs attention", rendered)
+        self.assertIn("Есть несколько пунктов", rendered)
+        self.assertIn("Общая оценка", rendered)
+        self.assertNotIn("Communication score", rendered)
 
     def test_overview_balanced_conversation(self) -> None:
         rendered = format_chat_overview(overview_report(), chat=chat(), language="en")

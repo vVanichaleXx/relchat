@@ -8,9 +8,9 @@ from types import SimpleNamespace
 
 from relchat.bot.formatters import format_chat_home, format_chat_home_loading
 from relchat.bot.handlers.chat_home import CHAT_HOME_STATE, handle_chat_home_callback
-from relchat.bot.keyboards import chat_home_keyboard, primary_chat_home_actions, secondary_chat_home_actions, utility_chat_home_actions
+from relchat.bot.keyboards import chat_home_details_menu_keyboard, chat_home_keyboard, primary_chat_home_actions, secondary_chat_home_actions, utility_chat_home_actions
 from relchat.bot.services.chat_home_service import build_chat_home_view_model
-from relchat.bot.ui_components import DIVIDER, render_empty_state, render_field, render_status
+from relchat.bot.ui_components import render_empty_state, render_field, render_status
 from relchat.config import Settings
 from relchat.core.models import Message
 from relchat.database.repositories import create_reminder, create_report, ensure_user_profile, save_user_message, update_user_setting
@@ -110,14 +110,9 @@ class ProductUxV4ChatHomeTest(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(view["state"]["label"], "stable")
         self.assertIn("Anna", rendered)
-        self.assertIn(DIVIDER, rendered)
-        self.assertGreaterEqual(rendered.count(DIVIDER), 4)
-        self.assertIn("🟢 Active", rendered)
         self.assertIn("Everything looks stable.", rendered)
-        self.assertIn("Last activity\nYesterday", rendered)
-        self.assertIn("Communication rhythm\nRegular", rendered)
-        self.assertIn("Trend\n→ Similar to the previous period", rendered)
-        self.assertIn("Attention\n\nNext reminder", rendered)
+        self.assertIn("Communication score", rendered)
+        self.assertIn("Last analysis\nToday", rendered)
         self.assertIn("Follow-up\nNo follow-ups suggested yet.", rendered)
         self.assertNotIn(SECRET_TEXT, rendered)
         self.assertNotIn(chat()["chat_id"], rendered)
@@ -143,10 +138,8 @@ class ProductUxV4ChatHomeTest(unittest.IsolatedAsyncioTestCase):
         rendered = format_chat_home(view, language="en")
 
         self.assertEqual(view["state"]["tone"], "attention")
-        self.assertIn("🟠 Needs attention", rendered)
         self.assertIn("A few items may need your attention.", rendered)
         self.assertIn("Follow-up\n3 follow-ups", rendered)
-        self.assertIn("Next reminder\nTomorrow", rendered)
         self.assertNotIn(SECRET_TEXT, rendered)
 
     def test_group_and_channel_wording(self) -> None:
@@ -171,11 +164,9 @@ class ProductUxV4ChatHomeTest(unittest.IsolatedAsyncioTestCase):
             language="en",
         )
 
-        self.assertIn("Group activity rhythm", group)
-        self.assertIn("Trend", group)
+        self.assertIn("Activity score", group)
         self.assertNotIn("relationship", group.lower())
-        self.assertIn("Posting cadence", channel)
-        self.assertIn("Trend", channel)
+        self.assertIn("Activity score", channel)
         self.assertNotIn("Communication rhythm", channel)
 
     def test_no_report_state_and_keyboard(self) -> None:
@@ -188,10 +179,9 @@ class ProductUxV4ChatHomeTest(unittest.IsolatedAsyncioTestCase):
         self.assertIn("No analysis yet.", rendered)
         self.assertIn("Run your first analysis", rendered)
         self.assertEqual(labels[0], "▶ Run analysis")
-        self.assertIn("Timeline", labels)
-        self.assertIn("Insights", labels)
-        self.assertIn("Chat settings", labels)
-        self.assertIn("Delete Local Data", labels)
+        self.assertIn("Details", labels)
+        self.assertNotIn("Timeline", labels)
+        self.assertNotIn("Chat settings", labels)
 
     def test_keyboard_callback_privacy_and_shape(self) -> None:
         keyboard = chat_home_keyboard(chat(), has_report=True, language="en")
@@ -199,12 +189,19 @@ class ProductUxV4ChatHomeTest(unittest.IsolatedAsyncioTestCase):
         callbacks = [button.callback_data or "" for row in keyboard.inline_keyboard for button in row]
 
         self.assertEqual(labels[0], "▶ Update analysis")
-        self.assertIn("Reports", labels)
+        self.assertIn("Details", labels)
+        self.assertNotIn("Reports", labels)
         self.assertNotIn("Response rhythm", labels)
         self.assertTrue(all(len(value) < 64 for value in callbacks))
         self.assertNotIn(chat()["chat_id"], "".join(callbacks))
         self.assertNotIn("Anna", "".join(callbacks))
-        self.assertIn("rc:set:data", callbacks)
+        self.assertIn("rc:home:details", callbacks)
+
+        details_labels = [button.text for row in chat_home_details_menu_keyboard(language="en").inline_keyboard for button in row]
+        self.assertIn("Timeline", details_labels)
+        self.assertIn("Activity", details_labels)
+        self.assertIn("Reports", details_labels)
+        self.assertIn("Chat settings", details_labels)
 
     def test_reusable_render_components(self) -> None:
         status = render_status(icon="🟠", title="Needs attention", explanation="No communication for 9 days.")
@@ -250,9 +247,8 @@ class ProductUxV4ChatHomeTest(unittest.IsolatedAsyncioTestCase):
         )
 
         self.assertIn("Все выглядит стабильно.", rendered)
-        self.assertIn("Ритм общения", rendered)
-        self.assertIn("Вчера", rendered)
-        self.assertIn("🟢 Активно", rendered)
+        self.assertIn("Общая оценка", rendered)
+        self.assertIn("Сегодня", rendered)
         self.assertNotIn("Everything looks stable", rendered)
 
     async def test_handler_renders_v4_chat_home_from_database(self) -> None:
@@ -300,8 +296,8 @@ class ProductUxV4ChatHomeTest(unittest.IsolatedAsyncioTestCase):
 
         self.assertTrue(handled)
         self.assertIn("Anna", update.callback_query.edited_text)
-        self.assertIn("Last activity", update.callback_query.edited_text)
-        self.assertIn("Needs attention", update.callback_query.edited_text)
+        self.assertIn("Communication score", update.callback_query.edited_text)
+        self.assertIn("1 follow-ups", update.callback_query.edited_text)
         self.assertNotIn(SECRET_TEXT, update.callback_query.edited_text)
 
 

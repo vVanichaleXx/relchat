@@ -18,15 +18,18 @@ from relchat.bot.keyboards import (
     settings_keyboard,
     settings_period_keyboard,
 )
+from relchat.bot.localization import t
 from relchat.bot.state import AWAITING_TEXT, RUNNABLE_MODULE_IDS
 from relchat.database.repositories import (
     clear_reminders,
     clear_reports,
     delete_all_user_data,
     delete_imported_messages_for_chat,
+    has_active_ai_consent,
     get_user_settings,
     list_user_chats,
     local_storage_summary,
+    revoke_ai_consent,
     set_onboarding_completed,
     update_user_setting,
 )
@@ -43,6 +46,7 @@ async def show_settings(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     user_id = bot_user_id(update)
     with connect(settings.db_path) as conn:
         user_settings = get_user_settings(conn, user_id)
+        user_settings["ai_consent_active"] = has_active_ai_consent(conn, user_id)
     await edit_or_reply(update, format_settings(user_settings), reply_markup=settings_keyboard(user_settings, language=user_settings["language"]))
 
 
@@ -137,6 +141,11 @@ async def handle_setting_action(update: Update, context: ContextTypes.DEFAULT_TY
         with connect(settings.db_path) as conn:
             set_onboarding_completed(conn, user_id, False)
         await edit_or_reply(update, "Onboarding reset. Use /start to view it again.")
+        return
+    if action == "ai_consent_revoke":
+        with connect(settings.db_path) as conn:
+            revoke_ai_consent(conn, user_id)
+        await edit_or_reply(update, t(language, "ai_consent_revoked"), reply_markup=settings_keyboard(user_settings, language=language))
         return
     if action == "data":
         await edit_or_reply(update, format_data_management(), reply_markup=data_management_keyboard(language))

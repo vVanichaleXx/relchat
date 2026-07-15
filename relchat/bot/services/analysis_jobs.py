@@ -4,16 +4,21 @@ import asyncio
 import socket
 import time
 import uuid
+from collections.abc import Sequence
 from datetime import datetime
 from typing import Any
 
-from relchat.bot.formatters import format_job_failure, format_job_progress, format_report_overview
-from relchat.bot.keyboards import job_progress_keyboard, report_sections_keyboard
+from relchat.bot.formatters import format_ai_result_overview, format_job_failure, format_job_progress, format_report_overview
+from relchat.bot.keyboards import ai_result_keyboard, job_progress_keyboard, report_sections_keyboard
+from relchat.bot.localization import t
+from relchat.bot.services.ai_analysis import AIAnalysisError, CONSENT_VERSION, run_ai_communication_analysis
+from relchat.bot.services.ux_audit import record_ux_event
 from relchat.bot.services.report_service import build_report
 from relchat.bot.state import JOB_RUNNING_STATES
 from relchat.config import Settings
 from relchat.core.models import Message
 from relchat.database.repositories import (
+    create_ai_analysis,
     get_analysis_job,
     get_user_settings,
     save_conversation,
@@ -183,6 +188,20 @@ async def run_analysis_job(application: Any, settings: Settings, job_id: str) ->
                 range_start=range_start,
                 range_end=range_end,
             )
+            conn.commit()
+        ai_analysis = None
+        ai_failed = False
+        if job.get("analysis_mode") == "ai":
+            ai_analysis, ai_failed = await run_optional_ai_analysis(
+                settings=settings,
+                job=job,
+                report=report,
+                messages=imported,
+                events=events,
+                chat_type=conversation.conversation_type,
+                started=started,
+            )
+        with connect(settings.db_path) as conn:
             update_analysis_job(
                 conn,
                 job_id,
@@ -190,11 +209,12 @@ async def run_analysis_job(application: Any, settings: Settings, job_id: str) ->
                 progress_percent=100,
                 imported_message_count=count,
                 report_id=report["report_id"],
+                ai_analysis_id=ai_analysis.get("analysis_id") if ai_analysis else None,
                 completed=True,
                 elapsed_seconds=int(time.monotonic() - started),
             )
             conn.commit()
-        await edit_completed_message(application, report, language=language)
+        await edit_completed_message(application, report, language=language, ai_analysis=ai_analysis, ai_failed=ai_failed)
     except Exception as exc:
         await fail_job(application, settings, job_id, exc, elapsed_seconds=int(time.monotonic() - started))
     finally:
@@ -246,7 +266,119 @@ async def edit_job_message(application: Any, job: dict[str, Any] | None, *, lang
     )
 
 
-async def edit_completed_message(application: Any, report: dict[str, Any], *, language: str) -> None:
+async def run_optional_ai_analysis(
+    *,
+    settings: Settings,
+    job: dict[str, Any],
+    report: dict[str, Any],
+    messages: list[Message],
+    events: Sequence[Any],
+    chat_type: str | None,
+    started: float,
+) -> tuple[dict[str, Any] | None, bool]:
+    record_ux_event(
+        settings,
+        "ai_analysis_started",
+        payload={
+            "mode": "ai",
+            "job_id": job.get("job_id"),
+            "message_count": len(messages),
+        },
+    )
+    try:
+        outcome = await run_ai_communication_analysis(
+            settings,
+            chat={
+                "source": job.get("source"),
+                "chat_id": job.get("chat_id"),
+                "chat_type": chat_type,
+                "title": job.get("chat_title"),
+            },
+            messages=messages,
+            events=events,
+            period_label=job.get("period_label") or "",
+        )
+        with connect(settings.db_path) as conn:
+            analysis = create_ai_analysis(
+                conn,
+                bot_user_id=job["bot_user_id"],
+                job_id=job.get("job_id"),
+                report_id=report.get("report_id"),
+                source=job.get("source") or "telegram",
+                chat_id=job["chat_id"],
+                chat_title=job.get("chat_title"),
+                model_name=outcome.model_name,
+                status="completed",
+                period_id=job.get("period_id"),
+                period_label=job.get("period_label"),
+                period_start=job.get("period_start"),
+                period_end=job.get("period_end"),
+                message_count_sent=outcome.message_count_sent,
+                char_count_sent=outcome.char_count_sent,
+                coverage=outcome.coverage,
+                result=outcome.result,
+                dimensions=outcome.result.get("dimensions"),
+                overall_score=outcome.result.get("overall_score"),
+                confidence=outcome.result.get("score_confidence"),
+                consent_version=CONSENT_VERSION,
+                token_usage=outcome.token_usage,
+            )
+            conn.commit()
+        record_ux_event(
+            settings,
+            "ai_analysis_completed",
+            payload={
+                "mode": "ai",
+                "job_id": job.get("job_id"),
+                "duration_seconds": int(time.monotonic() - started),
+                "message_count_sent": outcome.message_count_sent,
+                "char_count_sent": outcome.char_count_sent,
+                "token_usage": outcome.token_usage,
+            },
+        )
+        return analysis, False
+    except Exception as exc:
+        error_code = exc.code if isinstance(exc, AIAnalysisError) else safe_error_code(exc)
+        with connect(settings.db_path) as conn:
+            analysis = create_ai_analysis(
+                conn,
+                bot_user_id=job["bot_user_id"],
+                job_id=job.get("job_id"),
+                report_id=report.get("report_id"),
+                source=job.get("source") or "telegram",
+                chat_id=job["chat_id"],
+                chat_title=job.get("chat_title"),
+                model_name=settings.ai_model,
+                status="failed",
+                period_id=job.get("period_id"),
+                period_label=job.get("period_label"),
+                period_start=job.get("period_start"),
+                period_end=job.get("period_end"),
+                consent_version=CONSENT_VERSION,
+                error_code=error_code,
+            )
+            conn.commit()
+        record_ux_event(
+            settings,
+            "ai_analysis_failed",
+            payload={
+                "mode": "ai",
+                "job_id": job.get("job_id"),
+                "duration_seconds": int(time.monotonic() - started),
+                "error_code": error_code,
+            },
+        )
+        return analysis, True
+
+
+async def edit_completed_message(
+    application: Any,
+    report: dict[str, Any],
+    *,
+    language: str,
+    ai_analysis: dict[str, Any] | None = None,
+    ai_failed: bool = False,
+) -> None:
     job_like = {
         "progress_chat_id": report.get("progress_chat_id"),
         "progress_message_id": report.get("progress_message_id"),
@@ -255,12 +387,18 @@ async def edit_completed_message(application: Any, report: dict[str, Any], *, la
         job = get_analysis_job(conn, report.get("job_id")) if report.get("job_id") else None
     if job:
         job_like = job
-    await safe_edit(
-        application,
-        job_like,
-        format_report_overview(report),
-        reply_markup=report_sections_keyboard(report, language=language),
-    )
+    if ai_analysis and ai_analysis.get("status") == "completed":
+        await safe_edit(
+            application,
+            job_like,
+            format_ai_result_overview(ai_analysis, chat_title=report.get("chat_title"), language=language),
+            reply_markup=ai_result_keyboard(language=language),
+        )
+        return
+    text = format_report_overview(report)
+    if ai_failed:
+        text = "\n\n".join([text, t(language, "ai_error_failed"), t(language, "ai_offer_local")])
+    await safe_edit(application, job_like, text, reply_markup=report_sections_keyboard(report, language=language))
 
 
 async def edit_failure_message(application: Any, job: dict[str, Any] | None, *, language: str) -> None:

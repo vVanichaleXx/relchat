@@ -134,11 +134,52 @@ CREATE TABLE IF NOT EXISTS analysis_jobs (
   report_id TEXT,
   progress_chat_id INTEGER,
   progress_message_id INTEGER,
+  analysis_mode TEXT NOT NULL DEFAULT 'local',
+  ai_analysis_id TEXT,
   created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
   updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
   started_at TEXT,
   completed_at TEXT,
   elapsed_seconds INTEGER
+);
+
+CREATE TABLE IF NOT EXISTS ai_consents (
+  bot_user_id INTEGER NOT NULL,
+  consent_type TEXT NOT NULL,
+  policy_version TEXT NOT NULL,
+  accepted_at TEXT,
+  revoked_at TEXT,
+  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY(bot_user_id, consent_type, policy_version)
+);
+
+CREATE TABLE IF NOT EXISTS ai_analyses (
+  analysis_id TEXT PRIMARY KEY,
+  bot_user_id INTEGER NOT NULL,
+  report_id TEXT,
+  job_id TEXT,
+  source TEXT NOT NULL DEFAULT 'telegram',
+  chat_id TEXT NOT NULL,
+  chat_title TEXT,
+  model_name TEXT,
+  analysis_mode TEXT NOT NULL DEFAULT 'ai',
+  status TEXT NOT NULL,
+  period_id TEXT,
+  period_label TEXT,
+  period_start TEXT,
+  period_end TEXT,
+  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  message_count_sent INTEGER NOT NULL DEFAULT 0,
+  char_count_sent INTEGER NOT NULL DEFAULT 0,
+  coverage TEXT NOT NULL DEFAULT '{}',
+  result_json TEXT,
+  dimensions_json TEXT NOT NULL DEFAULT '{}',
+  overall_score REAL,
+  confidence TEXT,
+  consent_version TEXT,
+  token_usage TEXT,
+  error_code TEXT
 );
 
 CREATE TABLE IF NOT EXISTS reports (
@@ -187,6 +228,9 @@ CREATE INDEX IF NOT EXISTS idx_user_chats_user_favorite
 CREATE INDEX IF NOT EXISTS idx_analysis_jobs_user_status
   ON analysis_jobs(bot_user_id, status, updated_at);
 
+CREATE INDEX IF NOT EXISTS idx_ai_analyses_user_chat
+  ON ai_analyses(bot_user_id, source, chat_id, created_at);
+
 CREATE INDEX IF NOT EXISTS idx_reports_user_created
   ON reports(bot_user_id, created_at);
 
@@ -231,6 +275,8 @@ def migrate_schema(conn: sqlite3.Connection) -> None:
     ensure_column(conn, "analysis_jobs", "progress_chat_id", "INTEGER")
     ensure_column(conn, "analysis_jobs", "progress_message_id", "INTEGER")
     ensure_column(conn, "analysis_jobs", "elapsed_seconds", "INTEGER")
+    ensure_column(conn, "analysis_jobs", "analysis_mode", "TEXT NOT NULL DEFAULT 'local'")
+    ensure_column(conn, "analysis_jobs", "ai_analysis_id", "TEXT")
     conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_chats_source_chat ON chats(source, chat_id)")
     conn.execute(
         """

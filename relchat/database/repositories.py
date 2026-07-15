@@ -583,6 +583,7 @@ def create_analysis_job(
     modules: list[str],
     progress_chat_id: int | None = None,
     progress_message_id: int | None = None,
+    analysis_mode: str = "local",
 ) -> dict[str, Any]:
     job_id = new_id("job")
     conn.execute(
@@ -590,9 +591,9 @@ def create_analysis_job(
         INSERT INTO analysis_jobs(
           job_id, bot_user_id, source, chat_id, chat_title, period_id,
           period_label, period_start, period_end, modules, status,
-          progress_chat_id, progress_message_id
+          progress_chat_id, progress_message_id, analysis_mode
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'queued', ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'queued', ?, ?, ?)
         """,
         (
             job_id,
@@ -607,6 +608,7 @@ def create_analysis_job(
             json_dumps(modules),
             progress_chat_id,
             progress_message_id,
+            analysis_mode,
         ),
     )
     return get_analysis_job(conn, job_id) or {"job_id": job_id}
@@ -654,6 +656,7 @@ def update_analysis_job(
     error_reference: str | None = None,
     error_message: str | None = None,
     report_id: str | None = None,
+    ai_analysis_id: str | None = None,
     started: bool = False,
     completed: bool = False,
     elapsed_seconds: int | None = None,
@@ -678,6 +681,9 @@ def update_analysis_job(
     if report_id is not None:
         assignments.append("report_id = ?")
         params.append(report_id)
+    if ai_analysis_id is not None:
+        assignments.append("ai_analysis_id = ?")
+        params.append(ai_analysis_id)
     if started:
         assignments.append("started_at = COALESCE(started_at, CURRENT_TIMESTAMP)")
     if completed:
@@ -734,6 +740,244 @@ def analysis_job_from_row(row: sqlite3.Row) -> dict[str, Any]:
         "started_at": row["started_at"],
         "completed_at": row["completed_at"],
         "elapsed_seconds": row["elapsed_seconds"],
+        "analysis_mode": row["analysis_mode"] if "analysis_mode" in row.keys() else "local",
+        "ai_analysis_id": row["ai_analysis_id"] if "ai_analysis_id" in row.keys() else None,
+    }
+
+
+AI_CONSENT_TYPE = "openai_communication_analysis"
+AI_CONSENT_VERSION = "v1"
+
+
+def accept_ai_consent(
+    conn: sqlite3.Connection,
+    bot_user_id: int,
+    *,
+    consent_type: str = AI_CONSENT_TYPE,
+    policy_version: str = AI_CONSENT_VERSION,
+) -> dict[str, Any]:
+    timestamp = now_iso()
+    conn.execute(
+        """
+        INSERT INTO ai_consents(bot_user_id, consent_type, policy_version, accepted_at, revoked_at)
+        VALUES (?, ?, ?, ?, NULL)
+        ON CONFLICT(bot_user_id, consent_type, policy_version) DO UPDATE SET
+          accepted_at = excluded.accepted_at,
+          revoked_at = NULL,
+          updated_at = CURRENT_TIMESTAMP
+        """,
+        (bot_user_id, consent_type, policy_version, timestamp),
+    )
+    return get_ai_consent(conn, bot_user_id, consent_type=consent_type, policy_version=policy_version) or {}
+
+
+def revoke_ai_consent(
+    conn: sqlite3.Connection,
+    bot_user_id: int,
+    *,
+    consent_type: str = AI_CONSENT_TYPE,
+    policy_version: str = AI_CONSENT_VERSION,
+) -> None:
+    conn.execute(
+        """
+        UPDATE ai_consents
+        SET revoked_at = ?, updated_at = CURRENT_TIMESTAMP
+        WHERE bot_user_id = ? AND consent_type = ? AND policy_version = ?
+        """,
+        (now_iso(), bot_user_id, consent_type, policy_version),
+    )
+
+
+def get_ai_consent(
+    conn: sqlite3.Connection,
+    bot_user_id: int,
+    *,
+    consent_type: str = AI_CONSENT_TYPE,
+    policy_version: str = AI_CONSENT_VERSION,
+) -> dict[str, Any] | None:
+    row = conn.execute(
+        """
+        SELECT * FROM ai_consents
+        WHERE bot_user_id = ? AND consent_type = ? AND policy_version = ?
+        """,
+        (bot_user_id, consent_type, policy_version),
+    ).fetchone()
+    if row is None:
+        return None
+    return {
+        "bot_user_id": int(row["bot_user_id"]),
+        "consent_type": row["consent_type"],
+        "policy_version": row["policy_version"],
+        "accepted_at": row["accepted_at"],
+        "revoked_at": row["revoked_at"],
+        "active": bool(row["accepted_at"]) and not bool(row["revoked_at"]),
+    }
+
+
+def has_active_ai_consent(
+    conn: sqlite3.Connection,
+    bot_user_id: int,
+    *,
+    consent_type: str = AI_CONSENT_TYPE,
+    policy_version: str = AI_CONSENT_VERSION,
+) -> bool:
+    consent = get_ai_consent(conn, bot_user_id, consent_type=consent_type, policy_version=policy_version)
+    return bool(consent and consent.get("active"))
+
+
+def create_ai_analysis(
+    conn: sqlite3.Connection,
+    *,
+    bot_user_id: int,
+    job_id: str | None,
+    report_id: str | None,
+    source: str,
+    chat_id: str,
+    chat_title: str | None,
+    model_name: str | None,
+    status: str,
+    period_id: str | None,
+    period_label: str | None,
+    period_start: str | None,
+    period_end: str | None,
+    message_count_sent: int = 0,
+    char_count_sent: int = 0,
+    coverage: dict[str, Any] | None = None,
+    result: dict[str, Any] | None = None,
+    dimensions: dict[str, Any] | None = None,
+    overall_score: float | None = None,
+    confidence: str | None = None,
+    consent_version: str | None = AI_CONSENT_VERSION,
+    token_usage: dict[str, Any] | None = None,
+    error_code: str | None = None,
+) -> dict[str, Any]:
+    analysis_id = new_id("ai")
+    conn.execute(
+        """
+        INSERT INTO ai_analyses(
+          analysis_id, bot_user_id, report_id, job_id, source, chat_id, chat_title,
+          model_name, analysis_mode, status, period_id, period_label, period_start,
+          period_end, message_count_sent, char_count_sent, coverage, result_json,
+          dimensions_json, overall_score, confidence, consent_version, token_usage,
+          error_code
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'ai', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            analysis_id,
+            bot_user_id,
+            report_id,
+            job_id,
+            source,
+            chat_id,
+            chat_title,
+            model_name,
+            status,
+            period_id,
+            period_label,
+            period_start,
+            period_end,
+            max(0, int(message_count_sent)),
+            max(0, int(char_count_sent)),
+            json_dumps(coverage or {}),
+            json_dumps(result) if result is not None else None,
+            json_dumps(dimensions or {}),
+            overall_score,
+            confidence,
+            consent_version,
+            json_dumps(token_usage or {}),
+            error_code,
+        ),
+    )
+    return get_ai_analysis(conn, analysis_id, bot_user_id=bot_user_id) or {"analysis_id": analysis_id}
+
+
+def update_ai_analysis_status(
+    conn: sqlite3.Connection,
+    analysis_id: str,
+    *,
+    bot_user_id: int,
+    status: str,
+    error_code: str | None = None,
+) -> None:
+    conn.execute(
+        """
+        UPDATE ai_analyses
+        SET status = ?, error_code = COALESCE(?, error_code)
+        WHERE analysis_id = ? AND bot_user_id = ?
+        """,
+        (status, error_code, analysis_id, bot_user_id),
+    )
+
+
+def get_ai_analysis(conn: sqlite3.Connection, analysis_id: str, *, bot_user_id: int) -> dict[str, Any] | None:
+    row = conn.execute(
+        "SELECT * FROM ai_analyses WHERE analysis_id = ? AND bot_user_id = ?",
+        (analysis_id, bot_user_id),
+    ).fetchone()
+    return ai_analysis_from_row(row) if row is not None else None
+
+
+def latest_ai_analysis_for_chat(
+    conn: sqlite3.Connection,
+    bot_user_id: int,
+    *,
+    source: str,
+    chat_id: str,
+) -> dict[str, Any] | None:
+    row = conn.execute(
+        """
+        SELECT * FROM ai_analyses
+        WHERE bot_user_id = ? AND source = ? AND chat_id = ? AND status = 'completed'
+        ORDER BY created_at DESC
+        LIMIT 1
+        """,
+        (bot_user_id, source, chat_id),
+    ).fetchone()
+    return ai_analysis_from_row(row) if row is not None else None
+
+
+def has_running_ai_analysis(conn: sqlite3.Connection, bot_user_id: int, *, source: str, chat_id: str) -> bool:
+    row = conn.execute(
+        """
+        SELECT 1 FROM analysis_jobs
+        WHERE bot_user_id = ? AND source = ? AND chat_id = ?
+          AND analysis_mode = 'ai'
+          AND status IN ('queued','loading','importing','analyzing')
+        LIMIT 1
+        """,
+        (bot_user_id, source, chat_id),
+    ).fetchone()
+    return row is not None
+
+
+def ai_analysis_from_row(row: sqlite3.Row) -> dict[str, Any]:
+    return {
+        "analysis_id": row["analysis_id"],
+        "bot_user_id": int(row["bot_user_id"]),
+        "report_id": row["report_id"],
+        "job_id": row["job_id"],
+        "source": row["source"],
+        "chat_id": row["chat_id"],
+        "chat_title": row["chat_title"],
+        "model_name": row["model_name"],
+        "analysis_mode": row["analysis_mode"],
+        "status": row["status"],
+        "period_id": row["period_id"],
+        "period_label": row["period_label"],
+        "period_start": row["period_start"],
+        "period_end": row["period_end"],
+        "created_at": row["created_at"],
+        "message_count_sent": int(row["message_count_sent"] or 0),
+        "char_count_sent": int(row["char_count_sent"] or 0),
+        "coverage": json_loads(row["coverage"], {}),
+        "result": json_loads(row["result_json"], {}) if row["result_json"] else {},
+        "dimensions": json_loads(row["dimensions_json"], {}),
+        "overall_score": row["overall_score"],
+        "confidence": row["confidence"],
+        "consent_version": row["consent_version"],
+        "token_usage": json_loads(row["token_usage"], {}),
+        "error_code": row["error_code"],
     }
 
 
