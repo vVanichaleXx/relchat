@@ -247,7 +247,7 @@ class ProductUxV4ChatHomeTest(unittest.IsolatedAsyncioTestCase):
         )
 
         self.assertIn("Все выглядит стабильно.", rendered)
-        self.assertIn("Общая оценка", rendered)
+        self.assertIn("Оценка общения", rendered)
         self.assertIn("Сегодня", rendered)
         self.assertNotIn("Everything looks stable", rendered)
 

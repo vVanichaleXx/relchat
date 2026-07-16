@@ -170,7 +170,7 @@ class ProductUxV3NavigationTest(unittest.IsolatedAsyncioTestCase):
 
         self.assertIn("Человек", rendered)
         self.assertIn("Есть несколько пунктов", rendered)
-        self.assertIn("Общая оценка", rendered)
+        self.assertIn("Оценка общения", rendered)
         self.assertNotIn("Communication score", rendered)
 
     def test_overview_balanced_conversation(self) -> None:

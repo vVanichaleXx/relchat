@@ -86,8 +86,8 @@ Optional AI-enhanced analysis uses the official OpenAI Python SDK and the Respon
 OPENAI_API_KEY=
 RELCHAT_AI_ENABLED=false
 RELCHAT_AI_MODEL=
-RELCHAT_AI_MAX_MESSAGES=1500
-RELCHAT_AI_MAX_CHARS=120000
+RELCHAT_AI_MAX_MESSAGES=300
+RELCHAT_AI_MAX_CHARS=30000
 RELCHAT_AI_TIMEOUT_SECONDS=90
 ```
 
@@ -199,6 +199,12 @@ The bot requires the same local MTProto setup as the CLI. Run `python3 -m relcha
 
 The bot only deletes local RelChat data when asked. It does not delete Telegram chats, Telegram messages, Telegram accounts, or Telegram session files.
 
+## Communication Analysis
+
+RelChat’s normal result is called **Communication analysis**. It combines local deterministic metrics, rule-based events, optional AI interpretation, and a deterministic score into one readable report. It describes visible messaging behavior only. It is not a psychological diagnosis, personality diagnosis, relationship diagnosis, mental-health assessment, compatibility score, or prediction of hidden feelings.
+
+Local analysis stays on this machine and remains available without OpenAI. AI-enhanced analysis is optional.
+
 ## Optional AI Communication Analysis
 
 AI-enhanced analysis is off unless `RELCHAT_AI_ENABLED=true`, `OPENAI_API_KEY` is set, and `RELCHAT_AI_MODEL` names the configured model. The first AI-enhanced run asks for explicit consent in the bot:
@@ -213,9 +219,9 @@ The user can revoke consent in Settings. Revoked consent makes future AI-enhance
 What may be sent to OpenAI for the selected chat and period:
 
 - ordered message text, minimized to configured message/character limits
-- anonymous participant labels such as `You`, `Other person`, or `Participant 1`
+- anonymous participant labels such as `YOU`, `OTHER`, or `PARTICIPANT_1`
 - timestamps, message type, and reply references where useful
-- local deterministic summaries such as message counts, response metrics, and event counts
+- local deterministic summaries such as message counts, response metrics, event counts, and deterministic communication dimensions
 
 What is not sent:
 
@@ -223,9 +229,9 @@ What is not sent:
 - Telegram session data, API hashes, bot tokens, OpenAI API keys, raw Telethon objects
 - media files, unrelated chats, debug logs, deleted messages, or full database exports
 
-The communication score is a 0-10 description of visible communication quality during the selected period. It is derived from weighted observable dimensions, then reduced by risk dimensions and clamped to 0-10. It is not a measure of love, attraction, compatibility, truthfulness, mental health, hidden intentions, or either person’s value.
+The communication score is a 0-10 description of visible communication quality during the selected period. It is calculated locally from weighted observable dimensions such as reciprocity, initiative balance, reply quality, topic continuation, respectfulness, question engagement, and planning cooperation, then reduced by risk dimensions such as pressure risk, hostility, dismissiveness, unanswered-question rate, and harmful sarcasm intensity. The AI may explain patterns, but it does not choose the final numeric score. When there is too little data, RelChat shows an insufficient-data state instead of a precise-looking score.
 
-AI output is validated as structured JSON before persistence or rendering. Malformed output, timeouts, rate limits, disabled AI, missing keys, or model/API failures are handled safely and local analysis remains available. Large histories are limited by `RELCHAT_AI_MAX_MESSAGES` and `RELCHAT_AI_MAX_CHARS`; partial coverage is recorded instead of pretending the whole chat was analyzed.
+AI output is validated as structured JSON before persistence or rendering. Malformed output, refusals, timeouts, rate limits, disabled AI, missing keys, or model/API failures are handled safely and local analysis remains available. Large histories are limited by `RELCHAT_AI_MAX_MESSAGES` and `RELCHAT_AI_MAX_CHARS`; local metrics still cover the selected imported period, while AI receives only the configured representative sample. Partial coverage is displayed instead of pretending the whole chat was sent to AI.
 
 ## Implemented Metrics
 

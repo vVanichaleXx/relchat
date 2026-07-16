@@ -204,15 +204,8 @@ def ai_result_keyboard(*, language: str = "en"):
 
     return InlineKeyboardMarkup(
         [
-            [
-                InlineKeyboardButton(t(language, "button_full_analysis"), callback_data="rc:home:ai:full"),
-                InlineKeyboardButton(t(language, "ai_advice_title"), callback_data="rc:home:ai:advice"),
-            ],
-            [
-                InlineKeyboardButton(t(language, "ai_weak_replies_title"), callback_data="rc:home:ai:weak"),
-                InlineKeyboardButton(t(language, "ai_scores_title"), callback_data="rc:home:ai:scores"),
-            ],
-            [InlineKeyboardButton(t(language, "button_update_analysis"), callback_data="rc:home:run")],
+            [InlineKeyboardButton(t(language, "button_full_analysis"), callback_data="rc:home:ai:full")],
+            [InlineKeyboardButton(t(language, "ai_advice_title"), callback_data="rc:home:ai:advice")],
             [InlineKeyboardButton(t(language, "button_chat_home"), callback_data="rc:home:open")],
         ]
     )
@@ -223,8 +216,8 @@ def analysis_result_keyboard(report_id: str, *, language: str = "en"):
 
     return InlineKeyboardMarkup(
         [
-            [InlineKeyboardButton(t(language, "button_result_details"), callback_data=f"rc:rep:open:{report_id}")],
-            [InlineKeyboardButton(t(language, "button_update_analysis"), callback_data=f"rc:rep:again:{report_id}")],
+            [InlineKeyboardButton(t(language, "button_full_analysis"), callback_data=f"rc:rep:full:{report_id}")],
+            [InlineKeyboardButton(t(language, "ai_advice_title"), callback_data=f"rc:rep:advice:{report_id}")],
             [InlineKeyboardButton(t(language, "button_chat_home"), callback_data="rc:home:open")],
         ]
     )

@@ -4,16 +4,20 @@ from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import ContextTypes
 
 from relchat.bot.formatters import (
+    chunk_text,
     format_analysis_review,
+    format_ai_result_section,
     format_destructive_confirmation,
     format_failed_jobs,
     format_report_list,
     format_report_overview,
     format_report_section,
     format_reports_home,
+    format_unified_analysis_result,
 )
 from relchat.bot.handlers.common import bot_user_id, edit_or_reply, get_context_settings
 from relchat.bot.keyboards import (
+    analysis_result_keyboard,
     delete_report_confirmation_keyboard,
     report_list_keyboard,
     report_sections_keyboard,
@@ -26,6 +30,7 @@ from relchat.database.repositories import (
     delete_report,
     get_report,
     get_user_settings,
+    latest_ai_analysis_for_report,
     list_analysis_jobs,
     list_reports,
     set_report_favorite,
@@ -109,11 +114,25 @@ async def handle_report_action(update: Update, context: ContextTypes.DEFAULT_TYP
     with connect(settings.db_path) as conn:
         report = get_report(conn, report_id)
         language = get_user_settings(conn, user_id).get("language", "en")
+        analysis = latest_ai_analysis_for_report(conn, user_id, report_id) if report else None
     if not report or report["bot_user_id"] != user_id:
         await edit_or_reply(update, "This local report is no longer available.")
         return
-    if action == "open":
-        await edit_or_reply(update, format_report_overview(report), reply_markup=report_sections_keyboard(report, language=language))
+    if action in {"open", "full"}:
+        text = (
+            format_ai_result_section(analysis, "full", language=language)
+            if analysis and analysis.get("status") == "completed"
+            else format_unified_analysis_result(report, language=language)
+        )
+        await edit_or_reply_chunked(update, text, reply_markup=analysis_result_keyboard(report_id, language=language))
+        return
+    if action == "advice":
+        text = (
+            format_ai_result_section(analysis, "advice", language=language)
+            if analysis and analysis.get("status") == "completed"
+            else format_unified_analysis_result(report, language=language)
+        )
+        await edit_or_reply(update, text, reply_markup=analysis_result_keyboard(report_id, language=language))
         return
     if action == "sec":
         section = parts[4] if len(parts) >= 5 else "overview"
@@ -153,3 +172,17 @@ async def handle_report_action(update: Update, context: ContextTypes.DEFAULT_TYP
             }
         )
         await edit_or_reply(update, format_analysis_review(flow), reply_markup=review_keyboard(language))
+
+
+async def edit_or_reply_chunked(update: Update, text: str, *, reply_markup=None) -> None:
+    chunks = chunk_text(text)
+    if len(chunks) <= 1:
+        await edit_or_reply(update, text, reply_markup=reply_markup)
+        return
+    await edit_or_reply(update, chunks[0])
+    query = update.callback_query
+    message = query.message if query else update.effective_message
+    if message is None or not hasattr(message, "reply_text"):
+        return
+    for index, chunk in enumerate(chunks[1:], start=1):
+        await message.reply_text(chunk, reply_markup=reply_markup if index == len(chunks) - 1 else None)

@@ -10,7 +10,7 @@ from typing import Any
 
 from relchat.bot.formatters import format_job_failure, format_job_progress, format_unified_analysis_result
 from relchat.bot.keyboards import analysis_result_keyboard, job_progress_keyboard
-from relchat.bot.services.ai_analysis import AIAnalysisError, CONSENT_VERSION, run_ai_communication_analysis
+from relchat.bot.services.ai_analysis import AIAnalysisError, CONSENT_VERSION, local_fallback_analysis, run_ai_communication_analysis
 from relchat.bot.services.ux_audit import record_ux_event
 from relchat.bot.services.report_service import build_report
 from relchat.bot.state import JOB_RUNNING_STATES
@@ -200,6 +200,16 @@ async def run_analysis_job(application: Any, settings: Settings, job_id: str) ->
                 chat_type=conversation.conversation_type,
                 started=started,
             )
+        else:
+            ai_analysis = create_local_communication_analysis(
+                settings=settings,
+                job=job,
+                report=report,
+                messages=imported,
+                events=events,
+                chat_type=conversation.conversation_type,
+                started=started,
+            )
         with connect(settings.db_path) as conn:
             update_analysis_job(
                 conn,
@@ -340,6 +350,7 @@ async def run_optional_ai_analysis(
                 "message_count_sent": outcome.message_count_sent,
                 "char_count_sent": outcome.char_count_sent,
                 "token_usage": outcome.token_usage,
+                "score_produced": outcome.result.get("overall_score") is not None,
             },
         )
         return analysis, False
@@ -374,7 +385,82 @@ async def run_optional_ai_analysis(
                 "error_code": error_code,
             },
         )
-        return analysis, True
+        local_analysis = create_local_communication_analysis(
+            settings=settings,
+            job=job,
+            report=report,
+            messages=messages,
+            events=events,
+            chat_type=chat_type,
+            started=started,
+        )
+        return local_analysis or analysis, True
+
+
+def create_local_communication_analysis(
+    *,
+    settings: Settings,
+    job: dict[str, Any],
+    report: dict[str, Any],
+    messages: Sequence[Message],
+    events: Sequence[Any],
+    chat_type: str | None,
+    started: float,
+) -> dict[str, Any] | None:
+    record_ux_event(
+        settings,
+        "communication_analysis_started",
+        payload={
+            "mode": "local",
+            "job_id": job.get("job_id"),
+            "message_count": len(messages),
+        },
+    )
+    result = local_fallback_analysis(
+        messages=messages,
+        events=events,
+        period_label=job.get("period_label") or "",
+        chat_type=chat_type or "one_to_one",
+    )
+    with connect(settings.db_path) as conn:
+        analysis = create_ai_analysis(
+            conn,
+            bot_user_id=job["bot_user_id"],
+            job_id=job.get("job_id"),
+            report_id=report.get("report_id"),
+            source=job.get("source") or "telegram",
+            chat_id=job["chat_id"],
+            chat_title=job.get("chat_title"),
+            model_name=None,
+            analysis_mode="local",
+            status="completed",
+            period_id=job.get("period_id"),
+            period_label=job.get("period_label"),
+            period_start=job.get("period_start"),
+            period_end=job.get("period_end"),
+            message_count_sent=0,
+            char_count_sent=0,
+            coverage=result.get("coverage"),
+            result=result,
+            dimensions=result.get("dimensions"),
+            overall_score=result.get("overall_score"),
+            confidence=result.get("score_confidence"),
+            consent_version=None,
+            token_usage={},
+        )
+        conn.commit()
+    record_ux_event(
+        settings,
+        "communication_analysis_completed",
+        payload={
+            "mode": "local",
+            "job_id": job.get("job_id"),
+            "duration_seconds": int(time.monotonic() - started),
+            "message_count": len(messages),
+            "score_produced": result.get("overall_score") is not None,
+        },
+    )
+    return analysis
 
 
 async def edit_completed_message(

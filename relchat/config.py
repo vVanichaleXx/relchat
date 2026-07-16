@@ -38,8 +38,8 @@ class Settings:
     openai_api_key: str | None = None
     ai_enabled: bool = False
     ai_model: str | None = None
-    ai_max_messages: int = 1500
-    ai_max_chars: int = 120000
+    ai_max_messages: int = 300
+    ai_max_chars: int = 30000
     ai_timeout_seconds: int = 90
 
 
@@ -104,8 +104,8 @@ def get_settings() -> Settings:
         openai_api_key=openai_api_key,
         ai_enabled=parse_bool(os.environ.get("RELCHAT_AI_ENABLED"), default=False),
         ai_model=os.environ.get("RELCHAT_AI_MODEL") or None,
-        ai_max_messages=parse_positive_int(os.environ.get("RELCHAT_AI_MAX_MESSAGES"), default=1500),
-        ai_max_chars=parse_positive_int(os.environ.get("RELCHAT_AI_MAX_CHARS"), default=120000),
+        ai_max_messages=parse_positive_int(os.environ.get("RELCHAT_AI_MAX_MESSAGES"), default=300),
+        ai_max_chars=parse_positive_int(os.environ.get("RELCHAT_AI_MAX_CHARS"), default=30000),
         ai_timeout_seconds=parse_positive_int(os.environ.get("RELCHAT_AI_TIMEOUT_SECONDS"), default=90),
     )
 

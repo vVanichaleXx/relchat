@@ -19,7 +19,10 @@ from relchat.bot.keyboards import ai_result_keyboard, main_keyboard
 from relchat.bot.services.ai_analysis import (
     AIAnalysisError,
     build_ai_input_bundle,
+    build_deterministic_dimensions,
+    communication_score_from_dimensions,
     derive_overall_score,
+    local_fallback_analysis,
     run_ai_communication_analysis,
     validate_ai_result,
 )
@@ -96,37 +99,35 @@ def event() -> ConversationEvent:
 def ai_result(**overrides) -> dict:
     result = {
         "summary": "The conversation is active but uneven.",
-        "overall_score": 9.9,
-        "score_confidence": "medium",
-        "participants": {
+        "conversation_state": "active_uneven",
+        "confidence": "medium",
+        "participant_analysis": {
             "you": {
-                "communication_style": ["often asks direct questions"],
+                "summary": "YOU often asks direct questions and keeps plans clear.",
+                "observable_patterns": ["often asks direct questions"],
                 "strengths": ["keeps plans clear"],
-                "problems": ["sometimes sends several messages in a row"],
+                "possible_improvements": ["sometimes sends several messages in a row"],
             },
             "other": {
-                "communication_style": ["answers briefly"],
+                "summary": "OTHER answers briefly and sometimes skips direct questions.",
+                "observable_patterns": ["answers briefly"],
                 "strengths": ["responds without hostility"],
-                "problems": ["sometimes skips direct questions"],
+                "possible_improvements": ["sometimes skips direct questions"],
             },
         },
-        "dimensions": {
-            "reciprocity": {"score": 6.0, "explanation": "Both participants reply, but not evenly."},
-            "initiative_balance": {"score": 4.0, "explanation": "One side starts more sessions."},
-            "reply_quality": {"score": 6.0, "explanation": "Replies are present but sometimes brief."},
-            "respectfulness": {"score": 8.0, "explanation": "No strong hostile wording in the sample."},
-            "topic_continuation": {"score": 5.0, "explanation": "Some topics continue."},
-            "pressure_risk": {"score": 2.0, "explanation": "No strong pressure pattern."},
-            "sarcasm_intensity": {"score": 1.0, "explanation": "Little harmful sarcasm."},
-        },
-        "positive_patterns": ["shared planning", "regular replies"],
-        "problem_patterns": ["uneven initiative"],
+        "positive_patterns": [
+            {"title": "Shared planning", "explanation": "Both sides continue some plans.", "evidence_type": "metric"},
+            {"title": "Regular replies", "explanation": "Replies are visible in the selected period.", "evidence_type": "metric"},
+        ],
+        "problem_patterns": [
+            {"title": "Uneven initiative", "explanation": "One side starts more sessions.", "severity": "medium", "evidence_type": "metric"}
+        ],
         "weak_reply_patterns": [
             {
                 "category": "ignored_question",
                 "explanation": "A direct question did not receive a clear answer.",
                 "severity": "medium",
-                "message_reference": "m2",
+                "anonymous_message_reference": "m2",
             }
         ],
         "advice": [
@@ -141,6 +142,29 @@ def ai_result(**overrides) -> dict:
     }
     result.update(overrides)
     return result
+
+
+def deterministic_dimensions() -> dict:
+    return {
+        "reciprocity": {"score": 6.0, "confidence": "medium", "evidence_count": 30, "explanation": "Both participants reply, but not evenly.", "available": True},
+        "initiative_balance": {"score": 4.0, "confidence": "medium", "evidence_count": 6, "explanation": "One side starts more sessions.", "available": True},
+        "reply_quality": {"score": 6.0, "confidence": "medium", "evidence_count": 8, "explanation": "Replies are present but sometimes brief.", "available": True},
+        "respectfulness": {"score": 8.0, "confidence": "medium", "evidence_count": 30, "explanation": "No strong hostile wording in the sample.", "available": True},
+        "topic_continuation": {"score": 5.0, "confidence": "medium", "evidence_count": 4, "explanation": "Some topics continue.", "available": True},
+        "question_engagement": {"score": 6.0, "confidence": "low", "evidence_count": 2, "explanation": "Some questions continue.", "available": True},
+        "planning_cooperation": {"score": 5.0, "confidence": "low", "evidence_count": 2, "explanation": "Some plans are visible.", "available": True},
+        "pressure_risk": {"score": 2.0, "confidence": "low", "evidence_count": 1, "explanation": "No strong pressure pattern.", "available": True, "risk": True},
+        "sarcasm_intensity": {"score": 1.0, "confidence": "low", "evidence_count": 1, "explanation": "Little harmful sarcasm.", "available": True, "risk": True},
+    }
+
+
+def validated_result(**overrides) -> dict:
+    return validate_ai_result(
+        ai_result(**overrides),
+        dimensions=deterministic_dimensions(),
+        message_count=42,
+        coverage={"requested_period": "30 days", "available_messages": 42, "sent_messages": 4, "partial": True},
+    )
 
 
 class FakeResponses:
@@ -236,9 +260,12 @@ class ProductUxV7AiTest(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("Alice", payload_blob)
         self.assertNotIn("123456:abcdefghijklmnopqrstuvwxyz", payload_blob)
         self.assertNotIn("+1 415 555 0101", payload_blob)
-        self.assertIn("You", payload_blob)
-        self.assertIn("Other person", payload_blob)
+        self.assertIn("YOU", payload_blob)
+        self.assertIn("OTHER", payload_blob)
         self.assertIn("Recent message should be kept.", payload_blob)
+        self.assertIn("local_dimensions", payload)
+        self.assertIsNone(outcome.result.get("overall_score"))
+        self.assertTrue(outcome.result["score_state"]["insufficient_data"])
 
     async def test_ai_timeout_rate_limit_and_malformed_output_are_safe(self) -> None:
         with self.assertRaises(AIAnalysisError) as timeout:
@@ -267,33 +294,51 @@ class ProductUxV7AiTest(unittest.IsolatedAsyncioTestCase):
             validate_ai_result("{not json")
 
     def test_strict_schema_score_formula_and_forbidden_claims(self) -> None:
-        validated = validate_ai_result(ai_result(overall_score=10))
+        validated = validated_result()
 
-        self.assertNotEqual(validated["overall_score"], 10)
         self.assertEqual(validated["overall_score"], derive_overall_score(validated["dimensions"]))
         self.assertGreaterEqual(validated["overall_score"], 0)
         self.assertLessEqual(validated["overall_score"], 10)
 
         with self.assertRaises(AIAnalysisError):
-            validate_ai_result(ai_result(dimensions={}))
+            validate_ai_result(ai_result(overall_score=10), dimensions=deterministic_dimensions(), message_count=42)
         with self.assertRaises(AIAnalysisError):
-            validate_ai_result(ai_result(summary="They like you and lost interest."))
+            validate_ai_result(ai_result(conversation_state="secret_feelings"), dimensions=deterministic_dimensions(), message_count=42)
+        with self.assertRaises(AIAnalysisError):
+            validate_ai_result(ai_result(summary="They like you and lost interest."), dimensions=deterministic_dimensions(), message_count=42)
+
+    def test_score_boundaries_missing_dimensions_and_insufficient_data(self) -> None:
+        low_sample = communication_score_from_dimensions(deterministic_dimensions(), message_count=4)
+        self.assertIsNone(low_sample["score"])
+        self.assertTrue(low_sample["insufficient_data"])
+
+        partial = {"reciprocity": deterministic_dimensions()["reciprocity"]}
+        self.assertIsNone(communication_score_from_dimensions(partial, message_count=30)["score"])
+
+        extreme = deterministic_dimensions()
+        extreme["reciprocity"]["score"] = 99
+        extreme["pressure_risk"]["score"] = 99
+        score = communication_score_from_dimensions(extreme, message_count=100)["score"]
+        self.assertGreaterEqual(score, 0)
+        self.assertLessEqual(score, 10)
 
     def test_ai_rendering_has_no_raw_text_and_is_localized(self) -> None:
-        analysis = {"chat_title": "Anna", "result": validate_ai_result(ai_result(summary="Call +1 415 555 0101 and @alice."))}
+        analysis = {"chat_title": "Anna", "result": validated_result(summary="Call +1 415 555 0101 and @alice.")}
         overview = format_ai_result_overview(analysis, language="en")
         weak = format_ai_result_section(analysis, "weak", language="en")
         russian = format_ai_result_overview(analysis, language="ru")
 
         self.assertIn("Communication score", overview)
         self.assertIn("Advice", format_ai_result_section(analysis, "advice", language="en"))
+        self.assertIn("How you communicate", overview)
+        self.assertIn("How the other person communicates", overview)
         self.assertIn("Replies that weakened the conversation", weak)
         self.assertIn("Raw message text is hidden", weak)
         self.assertNotIn("Can you confirm Friday?", overview)
         self.assertNotIn("+1 415 555 0101", overview)
         self.assertNotIn("@alice", overview)
         self.assertIn("Анализ общения", russian)
-        self.assertIn("Общая оценка", russian)
+        self.assertIn("Оценка общения", russian)
 
         audit_payload = outgoing_payload(overview, action="edit")
         self.assertEqual(audit_payload["text_preview"], "[omitted private analysis]")
@@ -302,7 +347,9 @@ class ProductUxV7AiTest(unittest.IsolatedAsyncioTestCase):
     def test_ai_result_callbacks_are_private_and_short(self) -> None:
         keyboard = ai_result_keyboard(language="en")
         callbacks = [button.callback_data or "" for row in keyboard.inline_keyboard for button in row]
+        labels = [button.text for row in keyboard.inline_keyboard for button in row]
 
+        self.assertEqual(labels, ["Full analysis", "Advice", "Chat Home"])
         self.assertTrue(all(len(value) < 64 for value in callbacks))
         self.assertNotIn("Anna", "".join(callbacks))
         self.assertNotIn("telegram-chat", "".join(callbacks))
@@ -318,7 +365,7 @@ class ProductUxV7AiTest(unittest.IsolatedAsyncioTestCase):
                 revoke_ai_consent(conn, 100)
                 self.assertFalse(has_active_ai_consent(conn, 100))
 
-                result = validate_ai_result(ai_result())
+                result = validated_result()
                 own = create_ai_analysis(
                     conn,
                     bot_user_id=100,
@@ -400,6 +447,15 @@ class ProductUxV7BundleTest(unittest.TestCase):
 
         self.assertEqual(group.payload["chat_type"], "group")
         self.assertEqual(channel.payload["chat_type"], "channel")
+
+    def test_local_fallback_and_participant_mapping(self) -> None:
+        result = local_fallback_analysis(messages=messages(), events=[event()], period_label="30 days", chat_type="one_to_one")
+        self.assertIn("participant_analysis", result)
+        self.assertIn("advice", result)
+        bundle = build_ai_input_bundle(settings_for(ai_max_messages=4), chat={"chat_type": "one_to_one"}, messages=messages(), events=[event()], period_label="30 days")
+        senders = {item["sender"] for item in bundle.payload["messages"]}
+        self.assertIn("YOU", senders)
+        self.assertIn("OTHER", senders)
 
 
 if __name__ == "__main__":

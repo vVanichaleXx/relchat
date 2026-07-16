@@ -131,7 +131,7 @@ class ProductUxV8Test(unittest.IsolatedAsyncioTestCase):
         self.assertIn("Needs attention", rendered)
         self.assertIn("Data quality", rendered)
         self.assertNotIn("private secret text", rendered)
-        self.assertEqual(labels, ["Details", "Update analysis", "Chat Home"])
+        self.assertEqual(labels, ["Full analysis", "Advice", "Chat Home"])
         self.assertLessEqual(len(labels), 3)
         self.assertTrue(all(len(value) < 64 for value in callbacks))
 

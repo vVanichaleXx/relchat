@@ -948,6 +948,7 @@ def create_ai_analysis(
     chat_id: str,
     chat_title: str | None,
     model_name: str | None,
+    analysis_mode: str = "ai",
     status: str,
     period_id: str | None,
     period_label: str | None,
@@ -974,7 +975,7 @@ def create_ai_analysis(
           dimensions_json, overall_score, confidence, consent_version, token_usage,
           error_code
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'ai', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             analysis_id,
@@ -985,6 +986,7 @@ def create_ai_analysis(
             chat_id,
             chat_title,
             model_name,
+            analysis_mode,
             status,
             period_id,
             period_label,
@@ -1046,6 +1048,23 @@ def latest_ai_analysis_for_chat(
         LIMIT 1
         """,
         (bot_user_id, source, chat_id),
+    ).fetchone()
+    return ai_analysis_from_row(row) if row is not None else None
+
+
+def latest_ai_analysis_for_report(
+    conn: sqlite3.Connection,
+    bot_user_id: int,
+    report_id: str,
+) -> dict[str, Any] | None:
+    row = conn.execute(
+        """
+        SELECT * FROM ai_analyses
+        WHERE bot_user_id = ? AND report_id = ? AND status = 'completed'
+        ORDER BY created_at DESC
+        LIMIT 1
+        """,
+        (bot_user_id, report_id),
     ).fetchone()
     return ai_analysis_from_row(row) if row is not None else None
 

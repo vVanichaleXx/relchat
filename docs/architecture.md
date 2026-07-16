@@ -12,9 +12,11 @@ platform source -> importer -> normalized messages -> events -> memory -> analyt
 ```
 
 The optional AI layer consumes minimized normalized domain objects, extracted
-events, local metrics, and reports. It must never read Telethon objects,
-Telegram payloads, Telegram sessions, credentials, unrelated chats, media files,
-or raw platform-specific transports directly.
+events, local metrics, deterministic dimensions, and reports. It may explain
+observable communication patterns, but the final communication score is
+calculated locally. It must never read Telethon objects, Telegram payloads,
+Telegram sessions, credentials, unrelated chats, media files, or raw
+platform-specific transports directly.
 
 ## Current Package Map
 
@@ -125,11 +127,13 @@ The Bot API must not be treated as a data access layer. It cannot read a user's
 private chat history by itself. RelChat imports selected chats through the local
 user-authorized Telethon / MTProto session.
 
-Optional AI-enhanced analysis is composed from this layer through
+Optional AI-enhanced Communication analysis is composed from this layer through
 `bot/services/ai_analysis.py`, but the service itself consumes source-agnostic
 messages/events and settings. It uses the official OpenAI Responses API only
 when enabled by configuration and after persisted user consent. The OpenAI SDK
 is optional; bot startup and local deterministic analysis must work without it.
+Provider output is structured interpretation only; deterministic dimensions and
+the final 0-10 score are calculated locally before persistence/rendering.
 
 ### `cli/`
 
@@ -242,10 +246,11 @@ Optional bot AI flow:
 Telegram Bot analysis mode
   -> persisted user consent check
   -> local import and deterministic report
-  -> minimized normalized messages + local summaries
+  -> deterministic dimensions and local score
+  -> minimized normalized messages + local summaries + anonymous labels
   -> OpenAI Responses API structured JSON
-  -> schema validation, score derivation, privacy redaction
-  -> SQLite AI analysis metadata/result
+  -> schema validation, safety checks, privacy redaction
+  -> SQLite communication analysis metadata/result
   -> relchat.bot privacy-safe formatting
 ```
 
@@ -298,7 +303,8 @@ Sensitive local state:
 - Both default under `RELCHAT_DATA_DIR`, which is ignored by git.
 - Session files grant account access and must be treated like secrets.
 - Message text in SQLite is sensitive conversation content.
-- AI analysis rows store structured summaries, dimensions, metadata, coverage,
+- AI analysis rows store structured Communication analysis summaries,
+  deterministic dimensions, score metadata, coverage,
   consent version, and safe errors. They must not store raw OpenAI requests,
   raw OpenAI responses containing message text, or a second full copy of
   conversation messages.
@@ -348,8 +354,10 @@ Import isolation:
   IDs, database IDs, credentials, session paths, unrelated chats, media files, or
   debug logs.
 - Communication scores describe visible communication quality for the selected
-  period only. They must not be presented as feelings, compatibility,
-  truthfulness, mental health, hidden intentions, or personal value.
+  period only and are calculated locally from available dimensions. They must
+  not be presented as feelings, compatibility, truthfulness, mental health,
+  hidden intentions, or personal value. If evidence is too limited, the UI must
+  show an insufficient-data state instead of a precise-looking score.
 
 ## Developer Experience
 
