@@ -441,6 +441,79 @@ def format_ai_result_section(analysis: dict[str, Any], section: str, *, language
     return "\n".join(lines).strip()
 
 
+def format_unified_analysis_result(
+    report: dict[str, Any],
+    *,
+    ai_analysis: dict[str, Any] | None = None,
+    ai_failed: bool = False,
+    chat_type: str | None = None,
+    language: str = "en",
+) -> str:
+    if ai_analysis and ai_analysis.get("status") == "completed":
+        lines = [
+            t(language, "analysis_result_title"),
+            "",
+            format_ai_result_overview(ai_analysis, chat_title=report.get("chat_title"), language=language),
+            "",
+            result_data_quality_line(report, language=language),
+        ]
+        return "\n".join(line for line in lines if line is not None).strip()
+
+    metrics = report.get("metrics_summary") or {}
+    quality = report.get("data_quality") or {}
+    count = int(report.get("imported_message_count") or metrics.get("message_count") or 0)
+    stands_out = compact_result_stands_out(metrics, chat_type=chat_type, language=language)
+    attention = compact_attention_lines(report, confirmed_reminders=0, language=language)
+    lines = [
+        sanitize_label(report.get("chat_title"), fallback=t(language, "chat_type_unknown"), limit=80),
+        "",
+        t(language, "analysis_result_title"),
+        t(language, "analysis_result_local_mode"),
+        "",
+        current_snapshot_sentence(metrics, chat_type=chat_type, language=language) if count else t(language, "overview_no_messages"),
+        "",
+        f"{t(language, 'analysis_result_period')}: {sanitize_label(report.get('period_label'), fallback=t(language, 'not_available'), limit=60)}",
+        f"{t(language, 'analysis_result_messages')}: {count}",
+        "",
+        t(language, "analysis_result_stands_out"),
+        *(stands_out or [t(language, "empty")]),
+        "",
+        t(language, "analysis_result_attention"),
+        *(attention or [t(language, "overview_no_attention")]),
+        "",
+        t(language, "analysis_result_quality"),
+        f"{t(language, 'report_confidence')}: {sanitize_label(quality.get('confidence'), fallback=t(language, 'not_available'), limit=40)}",
+        f"{t(language, 'report_completeness')}: {sanitize_label(quality.get('completeness'), fallback=t(language, 'not_available'), limit=80)}",
+    ]
+    if ai_failed:
+        lines.extend(["", t(language, "analysis_result_ai_partial")])
+    return "\n".join(lines)
+
+
+def compact_result_stands_out(metrics: dict[str, Any], *, chat_type: str | None, language: str) -> list[str]:
+    result: list[str] = []
+    for line in compact_balance_lines(metrics, chat_type=chat_type, language=language):
+        if line != t(language, "overview_planning_balance_unavailable"):
+            result.append(f"• {line}")
+        if len(result) >= 2:
+            break
+    for line in compact_response_lines(metrics, language=language):
+        result.append(f"• {line}")
+        if len(result) >= 4:
+            break
+    return result
+
+
+def result_data_quality_line(report: dict[str, Any], *, language: str) -> str:
+    quality = report.get("data_quality") or {}
+    count = int(report.get("imported_message_count") or 0)
+    return (
+        f"{t(language, 'analysis_result_period')}: {sanitize_label(report.get('period_label'), fallback=t(language, 'not_available'), limit=60)}\n"
+        f"{t(language, 'analysis_result_messages')}: {count}\n"
+        f"{t(language, 'report_confidence')}: {sanitize_label(quality.get('confidence'), fallback=t(language, 'not_available'), limit=40)}"
+    )
+
+
 def string_bullets(values: Any, *, limit: int) -> str:
     rows = values if isinstance(values, list) else []
     return "\n".join(f"• {sanitize_label(str(item), fallback='', limit=220)}" for item in rows[:limit] if str(item).strip())

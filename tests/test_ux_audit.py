@@ -4,6 +4,7 @@ import json
 import os
 import tempfile
 import unittest
+from datetime import datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -308,7 +309,15 @@ class UxAuditDebugCommandTest(unittest.IsolatedAsyncioTestCase):
             settings = audit_settings(path)
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text("{bad json\n", encoding="utf-8")
-            write_raw_event(path, raw_event(100, "bot_reply", {"action": "reply", "text_preview": "Recent"}))
+            write_raw_event(
+                path,
+                raw_event(
+                    100,
+                    "bot_reply",
+                    {"action": "reply", "text_preview": "Recent"},
+                    timestamp=datetime.now(timezone.utc).isoformat(),
+                ),
+            )
             update = fake_command_update("/debug_export 30m", user_id=100)
 
             await debug_export_command(update, fake_context(settings, args=["30m"]))

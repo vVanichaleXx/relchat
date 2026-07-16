@@ -39,7 +39,16 @@ from relchat.bot.keyboards import (
     search_prompt_keyboard,
 )
 from relchat.bot.services.analysis_jobs import request_cancel, start_background_job
-from relchat.bot.services.chat_browser import PAGE_SIZE, filter_conversations, paginate_conversations, search_conversations
+from relchat.bot.services.chat_browser import (
+    PAGE_SIZE,
+    filter_conversations,
+    filter_folder_conversations,
+    load_cached_browser_state,
+    paginate_conversations,
+    refresh_dialog_cache,
+    search_conversations,
+    start_dialog_cache_refresh,
+)
 from relchat.bot.state import (
     ANALYSIS_FLOW,
     AWAITING_TEXT,
@@ -55,21 +64,16 @@ from relchat.bot.state import (
     period_label,
     period_start,
 )
-from relchat.core.models import ConversationRef, DialogFolder
+from relchat.core.models import ConversationRef
 from relchat.database.repositories import (
     accept_ai_consent,
     create_analysis_job,
     get_analysis_job,
     get_user_settings,
     has_active_ai_consent,
-    list_user_chats,
     save_user_chat,
 )
 from relchat.database.sqlite import connect, init_db
-from relchat.telegram.importer import list_conversations, list_dialog_folders
-
-
-GUIDED_DIALOG_FETCH_LIMIT = None
 
 
 async def handle_analysis_callback(update: Update, context: ContextTypes.DEFAULT_TYPE, parts: list[str]) -> bool:
@@ -93,32 +97,27 @@ async def handle_analysis_callback(update: Update, context: ContextTypes.DEFAULT
 async def load_chat_browser(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     try:
         settings = get_context_settings(context)
-        ensure_mtproto_ready(settings)
         language = get_language(update, context)
-        await edit_or_reply(update, "Loading chats...")
         init_db(settings.db_path)
-        conversations = await list_conversations(settings, limit=GUIDED_DIALOG_FETCH_LIMIT)
-        folders = await safe_list_dialog_folders(settings)
         user_id = bot_user_id(update)
-        with connect(settings.db_path) as conn:
-            favorite_ids = {chat["chat_id"] for chat in list_user_chats(conn, user_id, section="favorites", limit=1000)}
-            recent_ids = {chat["chat_id"] for chat in list_user_chats(conn, user_id, section="recent", limit=1000)}
-            for conversation in conversations:
-                save_user_chat(conn, user_id, conversation)
-        context.user_data[CHAT_BROWSER] = {
-            "conversations": conversations,
-            "filtered": conversations,
-            "folders": folders,
-            "category": "All chats",
-            "page": 0,
-            "search_query": None,
-            "favorite_ids": favorite_ids,
-            "recent_ids": recent_ids,
-        }
+        cached = load_cached_browser_state(settings, user_id)
+        if cached["conversations"]:
+            set_browser_state(context, cached, category="All chats")
+            maybe_start_dialog_refresh(context, settings, user_id)
+            await edit_or_reply(
+                update,
+                format_category_prompt(folder_count=len(cached["folders"])),
+                reply_markup=category_keyboard(cached["folders"], language=language),
+            )
+            return
+        ensure_mtproto_ready(settings)
+        await edit_or_reply(update, "Loading chats...")
+        refreshed = await refresh_dialog_cache(settings, user_id)
+        set_browser_state(context, refreshed, category="All chats")
         await edit_or_reply(
             update,
-            format_category_prompt(folder_count=len(folders)),
-            reply_markup=category_keyboard(folders, language=language),
+            format_category_prompt(folder_count=len(refreshed["folders"])),
+            reply_markup=category_keyboard(refreshed["folders"], language=language),
         )
     except Exception as exc:
         await edit_or_reply(
@@ -133,11 +132,32 @@ async def load_chat_browser(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         )
 
 
-async def safe_list_dialog_folders(settings) -> list[DialogFolder]:
+def set_browser_state(
+    context: ContextTypes.DEFAULT_TYPE,
+    state: dict[str, Any],
+    *,
+    category: str,
+) -> None:
+    conversations = list(state.get("conversations") or [])
+    context.user_data[CHAT_BROWSER] = {
+        "conversations": conversations,
+        "filtered": conversations,
+        "folders": list(state.get("folders") or []),
+        "folder_memberships": state.get("folder_memberships") or {},
+        "category": category,
+        "page": 0,
+        "search_query": None,
+        "favorite_ids": set(state.get("favorite_ids") or set()),
+        "recent_ids": set(state.get("recent_ids") or set()),
+    }
+
+
+def maybe_start_dialog_refresh(context: ContextTypes.DEFAULT_TYPE, settings, user_id: int) -> None:
     try:
-        return await list_dialog_folders(settings)
+        ensure_mtproto_ready(settings)
     except Exception:
-        return []
+        return
+    start_dialog_cache_refresh(context.application, settings, user_id)
 
 
 async def handle_browse_callback(update: Update, context: ContextTypes.DEFAULT_TYPE, parts: list[str]) -> None:
@@ -166,8 +186,11 @@ async def handle_browse_callback(update: Update, context: ContextTypes.DEFAULT_T
         if folder_id is None:
             await edit_or_reply(update, "This folder is no longer available. Return to the chat list and try again.")
             return
-        await edit_or_reply(update, "Loading chats...")
-        filtered = await load_folder_conversations(update, context, folder_id)
+        filtered = filter_folder_conversations(
+            browser["conversations"],
+            folder_id,
+            memberships=browser.get("folder_memberships") or {},
+        )
         browser.update({"filtered": filtered, "category": folder_title(browser, str(folder_id)), "page": 0, "search_query": None})
         await render_chat_page(update, context)
         return
@@ -557,17 +580,6 @@ def folder_title(browser: dict[str, Any], folder_id: str) -> str:
         if str(folder.folder_id) == str(folder_id):
             return folder.title
     return "Telegram folder"
-
-
-async def load_folder_conversations(update: Update, context: ContextTypes.DEFAULT_TYPE, folder_id: int) -> list[ConversationRef]:
-    settings = get_context_settings(context)
-    ensure_mtproto_ready(settings)
-    conversations = await list_conversations(settings, limit=GUIDED_DIALOG_FETCH_LIMIT, folder_id=folder_id)
-    user_id = bot_user_id(update)
-    with connect(settings.db_path) as conn:
-        for conversation in conversations:
-            save_user_chat(conn, user_id, conversation)
-    return conversations
 
 
 def parse_folder_id(value: str) -> int | None:

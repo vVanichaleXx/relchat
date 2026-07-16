@@ -7,7 +7,7 @@ from collections.abc import Iterable
 from datetime import datetime, timezone
 from typing import Any
 
-from relchat.core.models import ConversationRef, Message
+from relchat.core.models import ConversationRef, DialogFolder, Message
 
 
 def save_conversation(
@@ -424,6 +424,106 @@ def list_user_chats(
     return [user_chat_from_row(row) for row in rows]
 
 
+def list_cached_conversations(
+    conn: sqlite3.Connection,
+    bot_user_id: int,
+    *,
+    source: str = "telegram",
+    limit: int | None = None,
+) -> list[ConversationRef]:
+    params: list[Any] = [bot_user_id, source]
+    sql = """
+        SELECT * FROM user_chats
+        WHERE bot_user_id = ? AND source = ?
+        ORDER BY COALESCE(last_message_at, updated_at) DESC
+    """
+    if limit is not None:
+        sql += " LIMIT ?"
+        params.append(limit)
+    rows = conn.execute(sql, params).fetchall()
+    return [conversation_ref_from_user_chat(user_chat_from_row(row)) for row in rows]
+
+
+def save_dialog_cache(
+    conn: sqlite3.Connection,
+    bot_user_id: int,
+    *,
+    conversations: Iterable[ConversationRef],
+    folders: Iterable[DialogFolder],
+    folder_memberships: dict[int, set[str]] | None = None,
+    source: str = "telegram",
+) -> None:
+    ensure_user_profile(conn, bot_user_id)
+    for conversation in conversations:
+        save_user_chat(conn, bot_user_id, conversation)
+    conn.execute(
+        "DELETE FROM dialog_folders WHERE bot_user_id = ? AND source = ?",
+        (bot_user_id, source),
+    )
+    conn.execute(
+        "DELETE FROM dialog_folder_memberships WHERE bot_user_id = ? AND source = ?",
+        (bot_user_id, source),
+    )
+    for folder in folders:
+        conn.execute(
+            """
+            INSERT INTO dialog_folders(bot_user_id, source, folder_id, title)
+            VALUES (?, ?, ?, ?)
+            ON CONFLICT(bot_user_id, source, folder_id) DO UPDATE SET
+              title = excluded.title,
+              updated_at = CURRENT_TIMESTAMP
+            """,
+            (bot_user_id, source, int(folder.folder_id), folder.title),
+        )
+    for folder_id, chat_ids in (folder_memberships or {}).items():
+        for chat_id in chat_ids:
+            conn.execute(
+                """
+                INSERT INTO dialog_folder_memberships(bot_user_id, source, folder_id, chat_id)
+                VALUES (?, ?, ?, ?)
+                ON CONFLICT(bot_user_id, source, folder_id, chat_id) DO UPDATE SET
+                  updated_at = CURRENT_TIMESTAMP
+                """,
+                (bot_user_id, source, int(folder_id), str(chat_id)),
+            )
+
+
+def list_cached_dialog_folders(
+    conn: sqlite3.Connection,
+    bot_user_id: int,
+    *,
+    source: str = "telegram",
+) -> list[DialogFolder]:
+    rows = conn.execute(
+        """
+        SELECT folder_id, title FROM dialog_folders
+        WHERE bot_user_id = ? AND source = ?
+        ORDER BY folder_id ASC
+        """,
+        (bot_user_id, source),
+    ).fetchall()
+    return [DialogFolder(folder_id=int(row["folder_id"]), title=row["title"]) for row in rows]
+
+
+def cached_folder_memberships(
+    conn: sqlite3.Connection,
+    bot_user_id: int,
+    *,
+    source: str = "telegram",
+) -> dict[int, set[str]]:
+    rows = conn.execute(
+        """
+        SELECT folder_id, chat_id FROM dialog_folder_memberships
+        WHERE bot_user_id = ? AND source = ?
+        """,
+        (bot_user_id, source),
+    ).fetchall()
+    memberships: dict[int, set[str]] = {}
+    for row in rows:
+        memberships.setdefault(int(row["folder_id"]), set()).add(str(row["chat_id"]))
+    return memberships
+
+
 def set_user_chat_saved(
     conn: sqlite3.Connection,
     bot_user_id: int,
@@ -567,6 +667,19 @@ def user_chat_from_row(row: sqlite3.Row) -> dict[str, Any]:
         "created_at": row["created_at"],
         "updated_at": row["updated_at"],
     }
+
+
+def conversation_ref_from_user_chat(chat: dict[str, Any]) -> ConversationRef:
+    return ConversationRef(
+        source=chat.get("source") or "telegram",
+        conversation_id=str(chat.get("chat_id") or ""),
+        conversation_type=str(chat.get("chat_type") or "unknown"),
+        title=chat.get("title") or chat.get("display_title"),
+        last_message_at=chat.get("last_message_at"),
+        username=chat.get("username"),
+        folder_id=chat.get("folder_id"),
+        unread_count=int(chat.get("unread_count") or 0),
+    )
 
 
 def create_analysis_job(

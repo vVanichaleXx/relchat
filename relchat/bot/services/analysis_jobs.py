@@ -8,9 +8,8 @@ from collections.abc import Sequence
 from datetime import datetime
 from typing import Any
 
-from relchat.bot.formatters import format_ai_result_overview, format_job_failure, format_job_progress, format_report_overview
-from relchat.bot.keyboards import ai_result_keyboard, job_progress_keyboard, report_sections_keyboard
-from relchat.bot.localization import t
+from relchat.bot.formatters import format_job_failure, format_job_progress, format_unified_analysis_result
+from relchat.bot.keyboards import analysis_result_keyboard, job_progress_keyboard
 from relchat.bot.services.ai_analysis import AIAnalysisError, CONSENT_VERSION, run_ai_communication_analysis
 from relchat.bot.services.ux_audit import record_ux_event
 from relchat.bot.services.report_service import build_report
@@ -214,7 +213,14 @@ async def run_analysis_job(application: Any, settings: Settings, job_id: str) ->
                 elapsed_seconds=int(time.monotonic() - started),
             )
             conn.commit()
-        await edit_completed_message(application, report, language=language, ai_analysis=ai_analysis, ai_failed=ai_failed)
+        await edit_completed_message(
+            application,
+            report,
+            language=language,
+            ai_analysis=ai_analysis,
+            ai_failed=ai_failed,
+            chat_type=conversation.conversation_type,
+        )
     except Exception as exc:
         await fail_job(application, settings, job_id, exc, elapsed_seconds=int(time.monotonic() - started))
     finally:
@@ -378,6 +384,7 @@ async def edit_completed_message(
     language: str,
     ai_analysis: dict[str, Any] | None = None,
     ai_failed: bool = False,
+    chat_type: str | None = None,
 ) -> None:
     job_like = {
         "progress_chat_id": report.get("progress_chat_id"),
@@ -387,18 +394,19 @@ async def edit_completed_message(
         job = get_analysis_job(conn, report.get("job_id")) if report.get("job_id") else None
     if job:
         job_like = job
-    if ai_analysis and ai_analysis.get("status") == "completed":
-        await safe_edit(
-            application,
-            job_like,
-            format_ai_result_overview(ai_analysis, chat_title=report.get("chat_title"), language=language),
-            reply_markup=ai_result_keyboard(language=language),
-        )
-        return
-    text = format_report_overview(report)
-    if ai_failed:
-        text = "\n\n".join([text, t(language, "ai_error_failed"), t(language, "ai_offer_local")])
-    await safe_edit(application, job_like, text, reply_markup=report_sections_keyboard(report, language=language))
+    text = format_unified_analysis_result(
+        report,
+        ai_analysis=ai_analysis,
+        ai_failed=ai_failed,
+        chat_type=chat_type,
+        language=language,
+    )
+    await safe_edit(
+        application,
+        job_like,
+        text,
+        reply_markup=analysis_result_keyboard(report["report_id"], language=language),
+    )
 
 
 async def edit_failure_message(application: Any, job: dict[str, Any] | None, *, language: str) -> None:

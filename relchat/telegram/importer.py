@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import AsyncIterator
+from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
 
@@ -8,6 +9,13 @@ from relchat.config import Settings
 from relchat.core.models import ConversationRef, DialogFolder, Message
 from relchat.telegram.client import make_client
 from relchat.telegram.normalizer import entity_ref, normalize_dialog, normalize_entity, normalize_message
+
+
+@dataclass(frozen=True)
+class ConversationCatalog:
+    conversations: list[ConversationRef]
+    folders: list[DialogFolder]
+    folder_memberships: dict[int, set[str]]
 
 
 async def list_conversations(
@@ -27,6 +35,24 @@ async def list_conversations(
             else:
                 dialogs = await collect_dialogs(client, limit=limit, folder=folder_id)
         return [normalize_dialog(dialog) for dialog in dialogs]
+    finally:
+        await client.disconnect()
+
+
+async def load_conversation_catalog(settings: Settings, limit: int | None) -> ConversationCatalog:
+    client = make_client(settings)
+    await client.start()
+    try:
+        dialogs = await collect_dialogs(client, limit=limit)
+        filters = await load_dialog_filter_items(client)
+        conversations = [normalize_dialog(dialog) for dialog in dialogs]
+        folders = normalize_dialog_folders(filters)
+        memberships = dialog_folder_memberships(dialogs, filters)
+        return ConversationCatalog(
+            conversations=conversations,
+            folders=folders,
+            folder_memberships=memberships,
+        )
     finally:
         await client.disconnect()
 
@@ -119,6 +145,27 @@ def find_dialog_filter(filters: list[Any], folder_id: int) -> Any | None:
 
 def filter_dialogs_by_dialog_filter(dialogs: list[Any], dialog_filter: Any) -> list[Any]:
     return [dialog for dialog in dialogs if dialog_matches_filter(dialog, dialog_filter)]
+
+
+def dialog_folder_memberships(dialogs: list[Any], filters: list[Any]) -> dict[int, set[str]]:
+    memberships: dict[int, set[str]] = {}
+    for dialog in dialogs:
+        folder_id = getattr(dialog, "folder_id", None)
+        try:
+            normalized_folder_id = int(folder_id) if folder_id is not None else None
+        except (TypeError, ValueError):
+            normalized_folder_id = None
+        if normalized_folder_id is not None:
+            memberships.setdefault(normalized_folder_id, set()).add(str(dialog.id))
+    for dialog_filter in filters:
+        try:
+            folder_id = int(getattr(dialog_filter, "id"))
+        except (AttributeError, TypeError, ValueError):
+            continue
+        matched = {str(dialog.id) for dialog in filter_dialogs_by_dialog_filter(dialogs, dialog_filter)}
+        if matched:
+            memberships.setdefault(folder_id, set()).update(matched)
+    return memberships
 
 
 def dialog_matches_filter(dialog: Any, dialog_filter: Any) -> bool:

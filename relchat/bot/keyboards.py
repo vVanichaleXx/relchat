@@ -218,6 +218,18 @@ def ai_result_keyboard(*, language: str = "en"):
     )
 
 
+def analysis_result_keyboard(report_id: str, *, language: str = "en"):
+    from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+
+    return InlineKeyboardMarkup(
+        [
+            [InlineKeyboardButton(t(language, "button_result_details"), callback_data=f"rc:rep:open:{report_id}")],
+            [InlineKeyboardButton(t(language, "button_update_analysis"), callback_data=f"rc:rep:again:{report_id}")],
+            [InlineKeyboardButton(t(language, "button_chat_home"), callback_data="rc:home:open")],
+        ]
+    )
+
+
 def chat_home_section_keyboard(chat: dict, *, language: str = "en", section: str | None = None):
     from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 

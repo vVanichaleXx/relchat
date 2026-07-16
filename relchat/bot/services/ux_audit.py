@@ -229,7 +229,14 @@ def sanitize_value(value: Any) -> Any:
     if value is None or isinstance(value, (bool, int, float)):
         return value
     if isinstance(value, dict):
-        return {sanitize_text(str(key), limit=120): sanitize_value(item) for key, item in value.items()}
+        result = {}
+        for key, item in value.items():
+            safe_key = sanitize_text(str(key), limit=120)
+            if safe_key == "timestamp" and isinstance(item, str):
+                result[safe_key] = item
+            else:
+                result[safe_key] = sanitize_value(item)
+        return result
     if isinstance(value, (list, tuple, set)):
         return [sanitize_value(item) for item in list(value)[:100]]
     return f"[{value.__class__.__name__}]"

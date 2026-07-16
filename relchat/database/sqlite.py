@@ -115,6 +115,26 @@ CREATE TABLE IF NOT EXISTS user_chats (
   PRIMARY KEY(bot_user_id, source, chat_id)
 );
 
+CREATE TABLE IF NOT EXISTS dialog_folders (
+  bot_user_id INTEGER NOT NULL,
+  source TEXT NOT NULL DEFAULT 'telegram',
+  folder_id INTEGER NOT NULL,
+  title TEXT NOT NULL,
+  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY(bot_user_id, source, folder_id)
+);
+
+CREATE TABLE IF NOT EXISTS dialog_folder_memberships (
+  bot_user_id INTEGER NOT NULL,
+  source TEXT NOT NULL DEFAULT 'telegram',
+  folder_id INTEGER NOT NULL,
+  chat_id TEXT NOT NULL,
+  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY(bot_user_id, source, folder_id, chat_id)
+);
+
 CREATE TABLE IF NOT EXISTS analysis_jobs (
   job_id TEXT PRIMARY KEY,
   bot_user_id INTEGER NOT NULL,
@@ -224,6 +244,9 @@ CREATE INDEX IF NOT EXISTS idx_user_chats_user_saved
 
 CREATE INDEX IF NOT EXISTS idx_user_chats_user_favorite
   ON user_chats(bot_user_id, is_favorite, updated_at);
+
+CREATE INDEX IF NOT EXISTS idx_dialog_folder_memberships_user_folder
+  ON dialog_folder_memberships(bot_user_id, source, folder_id);
 
 CREATE INDEX IF NOT EXISTS idx_analysis_jobs_user_status
   ON analysis_jobs(bot_user_id, status, updated_at);
