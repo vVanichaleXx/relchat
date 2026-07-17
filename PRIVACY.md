@@ -12,6 +12,7 @@ RelChat is designed to be local-first, source-agnostic, and user-controlled.
 - Computes basic metrics locally.
 - Provides a restricted Telegram Bot interface that calls the same local import, metrics, and event logic.
 - Optionally sends minimized selected-message data to OpenAI for AI-enhanced communication analysis, only after explicit bot consent and only when configured by environment variables.
+- Lets users mark chats as important and, only when explicitly enabled, monitor those chats for a cautious “appears to have paused” automation heuristic.
 
 ## What The MVP Does Not Do
 
@@ -26,6 +27,8 @@ RelChat is designed to be local-first, source-agnostic, and user-controlled.
 - It does not print message text in CLI summaries unless `--show-text` is passed.
 - It does not print message text in bot replies.
 - It does not send Telegram sessions, API hashes, bot tokens, phone numbers, raw Telethon objects, media files, unrelated chats, debug logs, or full database exports to OpenAI.
+- It does not claim to know when a conversation definitely ended.
+- It does not monitor normal chats automatically. Automation is limited to important chats with user-level and chat-level switches enabled.
 
 ## Local Storage
 
@@ -43,6 +46,8 @@ This directory is ignored by git. It may contain:
 The current MVP stores normalized message text because Phase 1 metrics use text length and question detection. Future minimization work should make text retention configurable before broader product use.
 
 AI analysis records store metadata, score dimensions, validated structured output, coverage, model name, consent version, and safe error state. They do not store a second full copy of raw message text or raw OpenAI requests/responses.
+
+Important-chat automation stores per-user settings, message cursors, completed automatic message ranges, delayed notification metadata, cooldown state, and comparison metadata. It does not duplicate full message transcripts.
 
 ## Telegram Bot Interface
 
@@ -63,6 +68,8 @@ UX audit logs record safe interaction metadata such as mode selection,
 started/completed/failed state, duration, and usage counts. They must not record
 conversation prompts, source messages, API keys, or full private AI analysis
 text.
+
+Automatic-analysis audit events may record safe metadata such as important-chat enabled/disabled, automation started, pause candidate detected, notification suppressed with a safe reason, local or AI mode, duration, and message counts. They must not record source message text, AI prompts, full reports, raw provider responses, API keys, sessions, or phone numbers.
 
 ## Architectural Privacy Boundary
 
@@ -85,5 +92,6 @@ Users should be able to:
 - review privacy-sensitive behavior before enabling it
 - choose local-only analysis instead of AI-enhanced analysis
 - revoke AI consent from Settings
+- disable automation for a chat, pause it for 24 hours, or disable all automatic analysis
 
 Deleting `data/` removes the local database and Telegram session for the default configuration.

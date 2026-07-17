@@ -114,6 +114,40 @@ def list_messages(conn: sqlite3.Connection, conversation_id: str, *, source: str
     return [message_from_row(row) for row in rows]
 
 
+def list_user_messages(
+    conn: sqlite3.Connection,
+    bot_user_id: int,
+    conversation_id: str,
+    *,
+    source: str = "telegram",
+    after_message_id: int | None = None,
+    limit: int | None = None,
+) -> list[Message]:
+    where = [
+        "message_owners.bot_user_id = ?",
+        "messages.source = ?",
+        "messages.chat_id = ?",
+    ]
+    params: list[Any] = [bot_user_id, source, conversation_id]
+    if after_message_id is not None:
+        where.append("messages.message_id > ?")
+        params.append(int(after_message_id))
+    sql = f"""
+        SELECT messages.* FROM messages
+        INNER JOIN message_owners
+          ON message_owners.source = messages.source
+         AND message_owners.chat_id = messages.chat_id
+         AND message_owners.message_id = messages.message_id
+        WHERE {' AND '.join(where)}
+        ORDER BY messages.timestamp ASC, messages.message_id ASC
+    """
+    if limit is not None:
+        sql += " LIMIT ?"
+        params.append(max(0, int(limit)))
+    rows = conn.execute(sql, params).fetchall()
+    return [message_from_row(row) for row in rows]
+
+
 def mark_conversation_imported(
     conn: sqlite3.Connection,
     *,
@@ -268,6 +302,15 @@ def get_user_settings(conn: sqlite3.Connection, bot_user_id: int) -> dict[str, A
         "show_technical_details": bool(row["show_technical_details"]),
         "data_retention_days": row["data_retention_days"],
         "confirm_before_delete": bool(row["confirm_before_delete"]),
+        "automatic_analysis_master_enabled": bool(row["automatic_analysis_master_enabled"]),
+        "automatic_default_notification_enabled": bool(row["automatic_default_notification_enabled"]),
+        "automatic_default_minimum_new_messages": int(row["automatic_default_minimum_new_messages"] or 10),
+        "automatic_default_inactivity_minutes": int(row["automatic_default_inactivity_minutes"] or 45),
+        "automatic_default_cooldown_hours": int(row["automatic_default_cooldown_hours"] or 12),
+        "automatic_default_quiet_hours_enabled": bool(row["automatic_default_quiet_hours_enabled"]),
+        "automatic_default_quiet_hours_start": row["automatic_default_quiet_hours_start"] or "23:00",
+        "automatic_default_quiet_hours_end": row["automatic_default_quiet_hours_end"] or "08:00",
+        "automatic_default_preferred_analysis_mode": row["automatic_default_preferred_analysis_mode"] or "local",
     }
 
 
@@ -290,6 +333,15 @@ def default_user_settings(bot_user_id: int) -> dict[str, Any]:
         "show_technical_details": False,
         "data_retention_days": None,
         "confirm_before_delete": True,
+        "automatic_analysis_master_enabled": False,
+        "automatic_default_notification_enabled": True,
+        "automatic_default_minimum_new_messages": 10,
+        "automatic_default_inactivity_minutes": 45,
+        "automatic_default_cooldown_hours": 12,
+        "automatic_default_quiet_hours_enabled": True,
+        "automatic_default_quiet_hours_start": "23:00",
+        "automatic_default_quiet_hours_end": "08:00",
+        "automatic_default_preferred_analysis_mode": "local",
     }
 
 
@@ -302,6 +354,15 @@ def update_user_setting(conn: sqlite3.Connection, bot_user_id: int, key: str, va
         "show_technical_details",
         "data_retention_days",
         "confirm_before_delete",
+        "automatic_analysis_master_enabled",
+        "automatic_default_notification_enabled",
+        "automatic_default_minimum_new_messages",
+        "automatic_default_inactivity_minutes",
+        "automatic_default_cooldown_hours",
+        "automatic_default_quiet_hours_enabled",
+        "automatic_default_quiet_hours_start",
+        "automatic_default_quiet_hours_end",
+        "automatic_default_preferred_analysis_mode",
     }
     if key not in allowed:
         raise ValueError(f"Unknown user setting: {key}")
@@ -680,6 +741,711 @@ def conversation_ref_from_user_chat(chat: dict[str, Any]) -> ConversationRef:
         folder_id=chat.get("folder_id"),
         unread_count=int(chat.get("unread_count") or 0),
     )
+
+
+IMPORTANT_CHAT_SETTING_KEYS = {
+    "is_important",
+    "automatic_analysis_enabled",
+    "automatic_notification_enabled",
+    "minimum_new_messages",
+    "inactivity_threshold_minutes",
+    "cooldown_hours",
+    "quiet_hours_enabled",
+    "quiet_hours_start",
+    "quiet_hours_end",
+    "preferred_analysis_mode",
+    "automatic_delivery_mode",
+    "last_automatic_analysis_at",
+    "last_observed_message_at",
+    "last_automatic_message_id",
+    "automation_paused_until",
+}
+
+
+def important_chat_defaults(user_settings: dict[str, Any] | None = None) -> dict[str, Any]:
+    settings = user_settings or {}
+    return {
+        "is_important": False,
+        "automatic_analysis_enabled": False,
+        "automatic_notification_enabled": bool(settings.get("automatic_default_notification_enabled", True)),
+        "minimum_new_messages": int(settings.get("automatic_default_minimum_new_messages") or 10),
+        "inactivity_threshold_minutes": int(settings.get("automatic_default_inactivity_minutes") or 45),
+        "cooldown_hours": int(settings.get("automatic_default_cooldown_hours") or 12),
+        "quiet_hours_enabled": bool(settings.get("automatic_default_quiet_hours_enabled", True)),
+        "quiet_hours_start": settings.get("automatic_default_quiet_hours_start") or "23:00",
+        "quiet_hours_end": settings.get("automatic_default_quiet_hours_end") or "08:00",
+        "preferred_analysis_mode": settings.get("automatic_default_preferred_analysis_mode") or "local",
+        "automatic_delivery_mode": "suggest",
+        "last_automatic_analysis_at": None,
+        "last_observed_message_at": None,
+        "last_automatic_message_id": None,
+        "automation_paused_until": None,
+    }
+
+
+def get_important_chat_settings(
+    conn: sqlite3.Connection,
+    bot_user_id: int,
+    source: str,
+    chat_id: str,
+) -> dict[str, Any]:
+    user_settings = get_user_settings(conn, bot_user_id)
+    defaults = important_chat_defaults(user_settings)
+    row = conn.execute(
+        """
+        SELECT * FROM important_chat_settings
+        WHERE bot_user_id = ? AND source = ? AND chat_id = ?
+        """,
+        (bot_user_id, source, chat_id),
+    ).fetchone()
+    if row is None:
+        return {
+            "bot_user_id": bot_user_id,
+            "source": source,
+            "chat_id": chat_id,
+            **defaults,
+        }
+    return important_chat_settings_from_row(row, defaults=defaults)
+
+
+def ensure_important_chat_settings(
+    conn: sqlite3.Connection,
+    bot_user_id: int,
+    source: str,
+    chat_id: str,
+) -> dict[str, Any]:
+    current = get_important_chat_settings(conn, bot_user_id, source, chat_id)
+    conn.execute(
+        """
+        INSERT INTO important_chat_settings(
+          bot_user_id, source, chat_id, is_important, automatic_analysis_enabled,
+          automatic_notification_enabled, minimum_new_messages,
+          inactivity_threshold_minutes, cooldown_hours, quiet_hours_enabled,
+          quiet_hours_start, quiet_hours_end, preferred_analysis_mode,
+          automatic_delivery_mode
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(bot_user_id, source, chat_id) DO NOTHING
+        """,
+        (
+            bot_user_id,
+            source,
+            chat_id,
+            1 if current["is_important"] else 0,
+            1 if current["automatic_analysis_enabled"] else 0,
+            1 if current["automatic_notification_enabled"] else 0,
+            current["minimum_new_messages"],
+            current["inactivity_threshold_minutes"],
+            current["cooldown_hours"],
+            1 if current["quiet_hours_enabled"] else 0,
+            current["quiet_hours_start"],
+            current["quiet_hours_end"],
+            current["preferred_analysis_mode"],
+            current["automatic_delivery_mode"],
+        ),
+    )
+    return get_important_chat_settings(conn, bot_user_id, source, chat_id)
+
+
+def set_chat_important(
+    conn: sqlite3.Connection,
+    bot_user_id: int,
+    source: str,
+    chat_id: str,
+    important: bool,
+) -> dict[str, Any]:
+    ensure_important_chat_settings(conn, bot_user_id, source, chat_id)
+    conn.execute(
+        """
+        UPDATE important_chat_settings
+        SET is_important = ?,
+            automatic_analysis_enabled = CASE WHEN ? = 0 THEN 0 ELSE automatic_analysis_enabled END,
+            updated_at = CURRENT_TIMESTAMP
+        WHERE bot_user_id = ? AND source = ? AND chat_id = ?
+        """,
+        (1 if important else 0, 1 if important else 0, bot_user_id, source, chat_id),
+    )
+    if important:
+        conn.execute(
+            """
+            UPDATE user_chats
+            SET is_saved = 1, updated_at = CURRENT_TIMESTAMP
+            WHERE bot_user_id = ? AND source = ? AND chat_id = ?
+            """,
+            (bot_user_id, source, chat_id),
+        )
+    return get_important_chat_settings(conn, bot_user_id, source, chat_id)
+
+
+def update_important_chat_setting(
+    conn: sqlite3.Connection,
+    bot_user_id: int,
+    source: str,
+    chat_id: str,
+    key: str,
+    value: Any,
+) -> dict[str, Any]:
+    if key not in IMPORTANT_CHAT_SETTING_KEYS:
+        raise ValueError(f"Unknown important-chat setting: {key}")
+    ensure_important_chat_settings(conn, bot_user_id, source, chat_id)
+    stored = normalize_important_setting_value(key, value)
+    conn.execute(
+        f"""
+        UPDATE important_chat_settings
+        SET {key} = ?, updated_at = CURRENT_TIMESTAMP
+        WHERE bot_user_id = ? AND source = ? AND chat_id = ?
+        """,
+        (stored, bot_user_id, source, chat_id),
+    )
+    return get_important_chat_settings(conn, bot_user_id, source, chat_id)
+
+
+def list_important_chats(
+    conn: sqlite3.Connection,
+    bot_user_id: int,
+    *,
+    limit: int = 10,
+    offset: int = 0,
+) -> list[dict[str, Any]]:
+    rows = conn.execute(
+        """
+        SELECT important_chat_settings.*, user_chats.display_title, user_chats.local_title,
+               user_chats.chat_type, user_chats.username, user_chats.last_report_id,
+               automation_states.pending_new_message_count,
+               automation_states.last_automatic_analysis_at AS state_last_automatic_analysis_at
+        FROM important_chat_settings
+        LEFT JOIN user_chats
+          ON user_chats.bot_user_id = important_chat_settings.bot_user_id
+         AND user_chats.source = important_chat_settings.source
+         AND user_chats.chat_id = important_chat_settings.chat_id
+        LEFT JOIN automation_states
+          ON automation_states.bot_user_id = important_chat_settings.bot_user_id
+         AND automation_states.source = important_chat_settings.source
+         AND automation_states.chat_id = important_chat_settings.chat_id
+        WHERE important_chat_settings.bot_user_id = ?
+          AND important_chat_settings.is_important = 1
+        ORDER BY important_chat_settings.updated_at DESC
+        LIMIT ? OFFSET ?
+        """,
+        (bot_user_id, max(1, int(limit)), max(0, int(offset))),
+    ).fetchall()
+    user_settings = get_user_settings(conn, bot_user_id)
+    defaults = important_chat_defaults(user_settings)
+    return [important_chat_settings_from_row(row, defaults=defaults) for row in rows]
+
+
+def list_automation_enabled_chats(conn: sqlite3.Connection, *, limit: int | None = None) -> list[dict[str, Any]]:
+    sql = """
+        SELECT important_chat_settings.*, user_chats.display_title, user_chats.local_title,
+               user_chats.chat_type, user_chats.username, user_settings.automatic_analysis_master_enabled,
+               user_settings.default_modules, user_settings.automatic_default_notification_enabled,
+               user_settings.automatic_default_minimum_new_messages,
+               user_settings.automatic_default_inactivity_minutes,
+               user_settings.automatic_default_cooldown_hours,
+               user_settings.automatic_default_quiet_hours_enabled,
+               user_settings.automatic_default_quiet_hours_start,
+               user_settings.automatic_default_quiet_hours_end,
+               user_settings.automatic_default_preferred_analysis_mode
+        FROM important_chat_settings
+        INNER JOIN user_settings
+          ON user_settings.bot_user_id = important_chat_settings.bot_user_id
+        LEFT JOIN user_chats
+          ON user_chats.bot_user_id = important_chat_settings.bot_user_id
+         AND user_chats.source = important_chat_settings.source
+         AND user_chats.chat_id = important_chat_settings.chat_id
+        WHERE important_chat_settings.is_important = 1
+          AND important_chat_settings.automatic_analysis_enabled = 1
+          AND user_settings.automatic_analysis_master_enabled = 1
+        ORDER BY important_chat_settings.updated_at ASC
+    """
+    params: list[Any] = []
+    if limit is not None:
+        sql += " LIMIT ?"
+        params.append(max(1, int(limit)))
+    rows = conn.execute(sql, params).fetchall()
+    result = []
+    for row in rows:
+        user_defaults = important_chat_defaults(
+            {
+                "automatic_default_notification_enabled": bool(row["automatic_default_notification_enabled"]),
+                "automatic_default_minimum_new_messages": int(row["automatic_default_minimum_new_messages"] or 10),
+                "automatic_default_inactivity_minutes": int(row["automatic_default_inactivity_minutes"] or 45),
+                "automatic_default_cooldown_hours": int(row["automatic_default_cooldown_hours"] or 12),
+                "automatic_default_quiet_hours_enabled": bool(row["automatic_default_quiet_hours_enabled"]),
+                "automatic_default_quiet_hours_start": row["automatic_default_quiet_hours_start"],
+                "automatic_default_quiet_hours_end": row["automatic_default_quiet_hours_end"],
+                "automatic_default_preferred_analysis_mode": row["automatic_default_preferred_analysis_mode"],
+            }
+        )
+        item = important_chat_settings_from_row(row, defaults=user_defaults)
+        item["automatic_analysis_master_enabled"] = bool(row["automatic_analysis_master_enabled"])
+        item["default_modules"] = json_loads(row["default_modules"], [])
+        result.append(item)
+    return result
+
+
+def important_chat_settings_from_row(row: sqlite3.Row, *, defaults: dict[str, Any]) -> dict[str, Any]:
+    keys = set(row.keys())
+    local_title = row["local_title"] if "local_title" in keys else None
+    display_title = row["display_title"] if "display_title" in keys else None
+    title = local_title or display_title
+    value = {
+        "bot_user_id": int(row["bot_user_id"]),
+        "source": row["source"],
+        "chat_id": row["chat_id"],
+        "chat_type": row["chat_type"] if "chat_type" in keys else None,
+        "title": title,
+        "username": row["username"] if "username" in keys else None,
+        "last_report_id": row["last_report_id"] if "last_report_id" in keys else None,
+        "is_important": bool(row["is_important"]),
+        "automatic_analysis_enabled": bool(row["automatic_analysis_enabled"]),
+        "automatic_notification_enabled": bool(row["automatic_notification_enabled"]),
+        "minimum_new_messages": int(row["minimum_new_messages"] or defaults["minimum_new_messages"]),
+        "inactivity_threshold_minutes": int(row["inactivity_threshold_minutes"] or defaults["inactivity_threshold_minutes"]),
+        "cooldown_hours": int(row["cooldown_hours"] or defaults["cooldown_hours"]),
+        "quiet_hours_enabled": bool(row["quiet_hours_enabled"]),
+        "quiet_hours_start": row["quiet_hours_start"] or defaults["quiet_hours_start"],
+        "quiet_hours_end": row["quiet_hours_end"] or defaults["quiet_hours_end"],
+        "preferred_analysis_mode": row["preferred_analysis_mode"] or defaults["preferred_analysis_mode"],
+        "automatic_delivery_mode": row["automatic_delivery_mode"] or "suggest",
+        "last_automatic_analysis_at": row["last_automatic_analysis_at"],
+        "last_observed_message_at": row["last_observed_message_at"],
+        "last_automatic_message_id": row["last_automatic_message_id"],
+        "automation_paused_until": row["automation_paused_until"],
+        "created_at": row["created_at"],
+        "updated_at": row["updated_at"],
+    }
+    if "pending_new_message_count" in keys:
+        value["pending_new_message_count"] = int(row["pending_new_message_count"] or 0)
+    if "state_last_automatic_analysis_at" in keys and row["state_last_automatic_analysis_at"]:
+        value["last_automatic_analysis_at"] = row["state_last_automatic_analysis_at"]
+    return value
+
+
+def normalize_important_setting_value(key: str, value: Any) -> Any:
+    if key in {"is_important", "automatic_analysis_enabled", "automatic_notification_enabled", "quiet_hours_enabled"}:
+        return 1 if bool(value) else 0
+    if key in {"minimum_new_messages", "inactivity_threshold_minutes", "cooldown_hours", "last_automatic_message_id"}:
+        return int(value) if value is not None else None
+    if key == "preferred_analysis_mode":
+        return str(value) if str(value) in {"local", "ai"} else "local"
+    if key == "automatic_delivery_mode":
+        return str(value) if str(value) in {"suggest", "auto"} else "suggest"
+    return value
+
+
+def get_automation_state(
+    conn: sqlite3.Connection,
+    bot_user_id: int,
+    source: str,
+    chat_id: str,
+) -> dict[str, Any]:
+    row = conn.execute(
+        """
+        SELECT * FROM automation_states
+        WHERE bot_user_id = ? AND source = ? AND chat_id = ?
+        """,
+        (bot_user_id, source, chat_id),
+    ).fetchone()
+    if row is None:
+        return {
+            "bot_user_id": bot_user_id,
+            "source": source,
+            "chat_id": chat_id,
+            "observed_message_cursor": None,
+            "last_observed_message_at": None,
+            "last_automatic_message_id": None,
+            "last_automatic_analysis_at": None,
+            "last_notification_at": None,
+            "pending_new_message_count": 0,
+            "pending_range_start_message_id": None,
+            "pending_range_end_message_id": None,
+            "pending_deliver_after": None,
+            "last_pause_candidate_at": None,
+            "suppressed_reason": None,
+        }
+    return automation_state_from_row(row)
+
+
+def upsert_automation_state(
+    conn: sqlite3.Connection,
+    bot_user_id: int,
+    source: str,
+    chat_id: str,
+    **values: Any,
+) -> dict[str, Any]:
+    current = get_automation_state(conn, bot_user_id, source, chat_id)
+    current.update(values)
+    conn.execute(
+        """
+        INSERT INTO automation_states(
+          bot_user_id, source, chat_id, observed_message_cursor,
+          last_observed_message_at, last_automatic_message_id,
+          last_automatic_analysis_at, last_notification_at,
+          pending_new_message_count, pending_range_start_message_id,
+          pending_range_end_message_id, pending_deliver_after,
+          last_pause_candidate_at, suppressed_reason
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(bot_user_id, source, chat_id) DO UPDATE SET
+          observed_message_cursor = excluded.observed_message_cursor,
+          last_observed_message_at = excluded.last_observed_message_at,
+          last_automatic_message_id = excluded.last_automatic_message_id,
+          last_automatic_analysis_at = excluded.last_automatic_analysis_at,
+          last_notification_at = excluded.last_notification_at,
+          pending_new_message_count = excluded.pending_new_message_count,
+          pending_range_start_message_id = excluded.pending_range_start_message_id,
+          pending_range_end_message_id = excluded.pending_range_end_message_id,
+          pending_deliver_after = excluded.pending_deliver_after,
+          last_pause_candidate_at = excluded.last_pause_candidate_at,
+          suppressed_reason = excluded.suppressed_reason,
+          updated_at = CURRENT_TIMESTAMP
+        """,
+        (
+            bot_user_id,
+            source,
+            chat_id,
+            current.get("observed_message_cursor"),
+            current.get("last_observed_message_at"),
+            current.get("last_automatic_message_id"),
+            current.get("last_automatic_analysis_at"),
+            current.get("last_notification_at"),
+            int(current.get("pending_new_message_count") or 0),
+            current.get("pending_range_start_message_id"),
+            current.get("pending_range_end_message_id"),
+            current.get("pending_deliver_after"),
+            current.get("last_pause_candidate_at"),
+            current.get("suppressed_reason"),
+        ),
+    )
+    return get_automation_state(conn, bot_user_id, source, chat_id)
+
+
+def automation_state_from_row(row: sqlite3.Row) -> dict[str, Any]:
+    return {
+        "bot_user_id": int(row["bot_user_id"]),
+        "source": row["source"],
+        "chat_id": row["chat_id"],
+        "observed_message_cursor": row["observed_message_cursor"],
+        "last_observed_message_at": row["last_observed_message_at"],
+        "last_automatic_message_id": row["last_automatic_message_id"],
+        "last_automatic_analysis_at": row["last_automatic_analysis_at"],
+        "last_notification_at": row["last_notification_at"],
+        "pending_new_message_count": int(row["pending_new_message_count"] or 0),
+        "pending_range_start_message_id": row["pending_range_start_message_id"],
+        "pending_range_end_message_id": row["pending_range_end_message_id"],
+        "pending_deliver_after": row["pending_deliver_after"],
+        "last_pause_candidate_at": row["last_pause_candidate_at"],
+        "suppressed_reason": row["suppressed_reason"],
+        "created_at": row["created_at"],
+        "updated_at": row["updated_at"],
+    }
+
+
+def automatic_range_exists(
+    conn: sqlite3.Connection,
+    bot_user_id: int,
+    source: str,
+    chat_id: str,
+    start_message_id: int,
+    end_message_id: int,
+) -> bool:
+    row = conn.execute(
+        """
+        SELECT 1 FROM automatic_analysis_ranges
+        WHERE bot_user_id = ? AND source = ? AND chat_id = ?
+          AND start_message_id = ? AND end_message_id = ?
+        """,
+        (bot_user_id, source, chat_id, int(start_message_id), int(end_message_id)),
+    ).fetchone()
+    return row is not None
+
+
+def record_automatic_range(
+    conn: sqlite3.Connection,
+    *,
+    bot_user_id: int,
+    source: str,
+    chat_id: str,
+    start_message_id: int,
+    end_message_id: int,
+    message_count: int,
+    action: str,
+    analysis_id: str | None = None,
+    report_id: str | None = None,
+) -> dict[str, Any]:
+    range_id = new_id("auto")
+    conn.execute(
+        """
+        INSERT INTO automatic_analysis_ranges(
+          range_id, bot_user_id, source, chat_id, start_message_id,
+          end_message_id, message_count, action, analysis_id, report_id
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(bot_user_id, source, chat_id, start_message_id, end_message_id)
+        DO UPDATE SET
+          action = excluded.action,
+          analysis_id = COALESCE(excluded.analysis_id, automatic_analysis_ranges.analysis_id),
+          report_id = COALESCE(excluded.report_id, automatic_analysis_ranges.report_id),
+          completed_at = CURRENT_TIMESTAMP
+        """,
+        (
+            range_id,
+            bot_user_id,
+            source,
+            chat_id,
+            int(start_message_id),
+            int(end_message_id),
+            max(0, int(message_count)),
+            action,
+            analysis_id,
+            report_id,
+        ),
+    )
+    return {
+        "range_id": range_id,
+        "bot_user_id": bot_user_id,
+        "source": source,
+        "chat_id": chat_id,
+        "start_message_id": int(start_message_id),
+        "end_message_id": int(end_message_id),
+        "message_count": max(0, int(message_count)),
+        "action": action,
+        "analysis_id": analysis_id,
+        "report_id": report_id,
+    }
+
+
+def create_pending_automatic_notification(
+    conn: sqlite3.Connection,
+    *,
+    bot_user_id: int,
+    source: str,
+    chat_id: str,
+    chat_title: str | None,
+    range_start_message_id: int,
+    range_end_message_id: int,
+    notification_type: str,
+    deliver_after: str | None,
+    payload: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    notification_id = new_id("not")
+    conn.execute(
+        """
+        INSERT INTO pending_automatic_notifications(
+          notification_id, bot_user_id, source, chat_id, chat_title,
+          range_start_message_id, range_end_message_id, notification_type,
+          status, deliver_after, payload_json
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?)
+        """,
+        (
+            notification_id,
+            bot_user_id,
+            source,
+            chat_id,
+            chat_title,
+            int(range_start_message_id),
+            int(range_end_message_id),
+            notification_type,
+            deliver_after,
+            json_dumps(payload or {}),
+        ),
+    )
+    return get_pending_automatic_notification(conn, bot_user_id, notification_id) or {"notification_id": notification_id}
+
+
+def get_pending_automatic_notification(
+    conn: sqlite3.Connection,
+    bot_user_id: int,
+    notification_id: str,
+) -> dict[str, Any] | None:
+    row = conn.execute(
+        """
+        SELECT * FROM pending_automatic_notifications
+        WHERE notification_id = ? AND bot_user_id = ?
+        """,
+        (notification_id, bot_user_id),
+    ).fetchone()
+    return automatic_notification_from_row(row) if row is not None else None
+
+
+def list_due_automatic_notifications(
+    conn: sqlite3.Connection,
+    *,
+    now: str,
+    limit: int = 20,
+) -> list[dict[str, Any]]:
+    rows = conn.execute(
+        """
+        SELECT * FROM pending_automatic_notifications
+        WHERE status = 'pending'
+          AND (deliver_after IS NULL OR deliver_after <= ?)
+        ORDER BY COALESCE(deliver_after, created_at) ASC
+        LIMIT ?
+        """,
+        (now, max(1, int(limit))),
+    ).fetchall()
+    return [automatic_notification_from_row(row) for row in rows]
+
+
+def update_automatic_notification_status(
+    conn: sqlite3.Connection,
+    bot_user_id: int,
+    notification_id: str,
+    status: str,
+) -> None:
+    conn.execute(
+        """
+        UPDATE pending_automatic_notifications
+        SET status = ?, updated_at = CURRENT_TIMESTAMP
+        WHERE bot_user_id = ? AND notification_id = ?
+        """,
+        (status, bot_user_id, notification_id),
+    )
+
+
+def count_automatic_notifications_since(
+    conn: sqlite3.Connection,
+    bot_user_id: int,
+    since_iso: str,
+) -> int:
+    row = conn.execute(
+        """
+        SELECT COUNT(*) AS count FROM pending_automatic_notifications
+        WHERE bot_user_id = ? AND status IN ('delivered','completed') AND updated_at >= ?
+        """,
+        (bot_user_id, since_iso),
+    ).fetchone()
+    return int(row["count"] or 0)
+
+
+def automatic_notification_from_row(row: sqlite3.Row) -> dict[str, Any]:
+    return {
+        "notification_id": row["notification_id"],
+        "bot_user_id": int(row["bot_user_id"]),
+        "source": row["source"],
+        "chat_id": row["chat_id"],
+        "chat_title": row["chat_title"],
+        "range_start_message_id": int(row["range_start_message_id"]),
+        "range_end_message_id": int(row["range_end_message_id"]),
+        "notification_type": row["notification_type"],
+        "status": row["status"],
+        "deliver_after": row["deliver_after"],
+        "payload": json_loads(row["payload_json"], {}),
+        "created_at": row["created_at"],
+        "updated_at": row["updated_at"],
+    }
+
+
+def create_period_comparison(
+    conn: sqlite3.Connection,
+    *,
+    bot_user_id: int,
+    source: str,
+    chat_id: str,
+    comparison_type: str,
+    status: str,
+    quality: str,
+    result: dict[str, Any],
+    current_report_id: str | None = None,
+    previous_report_id: str | None = None,
+    current_analysis_id: str | None = None,
+    previous_analysis_id: str | None = None,
+) -> dict[str, Any]:
+    comparison_id = new_id("cmp")
+    conn.execute(
+        """
+        INSERT INTO period_comparisons(
+          comparison_id, bot_user_id, source, chat_id, comparison_type,
+          current_report_id, previous_report_id, current_analysis_id,
+          previous_analysis_id, status, quality, result_json
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            comparison_id,
+            bot_user_id,
+            source,
+            chat_id,
+            comparison_type,
+            current_report_id,
+            previous_report_id,
+            current_analysis_id,
+            previous_analysis_id,
+            status,
+            quality,
+            json_dumps(result),
+        ),
+    )
+    return get_period_comparison(conn, bot_user_id, comparison_id) or {"comparison_id": comparison_id}
+
+
+def get_period_comparison(
+    conn: sqlite3.Connection,
+    bot_user_id: int,
+    comparison_id: str,
+) -> dict[str, Any] | None:
+    row = conn.execute(
+        """
+        SELECT * FROM period_comparisons
+        WHERE bot_user_id = ? AND comparison_id = ?
+        """,
+        (bot_user_id, comparison_id),
+    ).fetchone()
+    return period_comparison_from_row(row) if row is not None else None
+
+
+def latest_period_comparison_for_report(
+    conn: sqlite3.Connection,
+    bot_user_id: int,
+    report_id: str,
+) -> dict[str, Any] | None:
+    row = conn.execute(
+        """
+        SELECT * FROM period_comparisons
+        WHERE bot_user_id = ? AND current_report_id = ?
+        ORDER BY created_at DESC
+        LIMIT 1
+        """,
+        (bot_user_id, report_id),
+    ).fetchone()
+    return period_comparison_from_row(row) if row is not None else None
+
+
+def latest_period_comparison_for_analysis(
+    conn: sqlite3.Connection,
+    bot_user_id: int,
+    analysis_id: str,
+) -> dict[str, Any] | None:
+    row = conn.execute(
+        """
+        SELECT * FROM period_comparisons
+        WHERE bot_user_id = ? AND current_analysis_id = ?
+        ORDER BY created_at DESC
+        LIMIT 1
+        """,
+        (bot_user_id, analysis_id),
+    ).fetchone()
+    return period_comparison_from_row(row) if row is not None else None
+
+
+def period_comparison_from_row(row: sqlite3.Row) -> dict[str, Any]:
+    return {
+        "comparison_id": row["comparison_id"],
+        "bot_user_id": int(row["bot_user_id"]),
+        "source": row["source"],
+        "chat_id": row["chat_id"],
+        "comparison_type": row["comparison_type"],
+        "current_report_id": row["current_report_id"],
+        "previous_report_id": row["previous_report_id"],
+        "current_analysis_id": row["current_analysis_id"],
+        "previous_analysis_id": row["previous_analysis_id"],
+        "status": row["status"],
+        "quality": row["quality"],
+        "result": json_loads(row["result_json"], {}),
+        "created_at": row["created_at"],
+    }
 
 
 def create_analysis_job(
@@ -1215,6 +1981,7 @@ def delete_report(conn: sqlite3.Connection, report_id: str, bot_user_id: int) ->
 def clear_reports(conn: sqlite3.Connection, bot_user_id: int) -> int:
     before = conn.total_changes
     conn.execute("DELETE FROM reports WHERE bot_user_id = ?", (bot_user_id,))
+    conn.execute("DELETE FROM period_comparisons WHERE bot_user_id = ?", (bot_user_id,))
     return conn.total_changes - before
 
 
@@ -1222,6 +1989,10 @@ def delete_reports_for_chat(conn: sqlite3.Connection, bot_user_id: int, source: 
     before = conn.total_changes
     conn.execute(
         "DELETE FROM reports WHERE bot_user_id = ? AND source = ? AND chat_id = ?",
+        (bot_user_id, source, chat_id),
+    )
+    conn.execute(
+        "DELETE FROM period_comparisons WHERE bot_user_id = ? AND source = ? AND chat_id = ?",
         (bot_user_id, source, chat_id),
     )
     return conn.total_changes - before
@@ -1410,9 +2181,14 @@ def local_storage_summary(conn: sqlite3.Connection, bot_user_id: int) -> dict[st
         "SELECT COUNT(*) AS count FROM analysis_jobs WHERE bot_user_id = ?",
         (bot_user_id,),
     ).fetchone()["count"]
+    important = conn.execute(
+        "SELECT COUNT(*) AS count FROM important_chat_settings WHERE bot_user_id = ? AND is_important = 1",
+        (bot_user_id,),
+    ).fetchone()["count"]
     return {
         **saved,
         "known_chats": int(chats or 0),
+        "important_chats": int(important or 0),
         "messages": int(messages or 0),
         "jobs": int(jobs or 0),
     }
@@ -1428,6 +2204,13 @@ def delete_all_user_data(conn: sqlite3.Connection, bot_user_id: int) -> None:
     conn.execute("DELETE FROM user_chats WHERE bot_user_id = ?", (bot_user_id,))
     conn.execute("DELETE FROM reports WHERE bot_user_id = ?", (bot_user_id,))
     conn.execute("DELETE FROM analysis_jobs WHERE bot_user_id = ?", (bot_user_id,))
+    conn.execute("DELETE FROM ai_analyses WHERE bot_user_id = ?", (bot_user_id,))
     conn.execute("DELETE FROM reminders WHERE bot_user_id = ?", (bot_user_id,))
+    conn.execute("DELETE FROM important_chat_settings WHERE bot_user_id = ?", (bot_user_id,))
+    conn.execute("DELETE FROM automation_states WHERE bot_user_id = ?", (bot_user_id,))
+    conn.execute("DELETE FROM automatic_analysis_ranges WHERE bot_user_id = ?", (bot_user_id,))
+    conn.execute("DELETE FROM pending_automatic_notifications WHERE bot_user_id = ?", (bot_user_id,))
+    conn.execute("DELETE FROM period_comparisons WHERE bot_user_id = ?", (bot_user_id,))
+    conn.execute("DELETE FROM ai_consents WHERE bot_user_id = ?", (bot_user_id,))
     conn.execute("DELETE FROM user_settings WHERE bot_user_id = ?", (bot_user_id,))
     conn.execute("DELETE FROM bot_user_profiles WHERE bot_user_id = ?", (bot_user_id,))

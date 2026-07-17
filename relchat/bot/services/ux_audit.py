@@ -186,8 +186,12 @@ def outgoing_text_preview(text: str) -> str:
         "communication analysis",
         "communication score",
         "replies that weakened",
+        "analysis completed automatically",
+        "direct findings",
         "аналитика общения",
         "анализ общения",
+        "оценка общения",
+        "анализ выполнен автоматически",
         "общая оценка",
         "ответы, которые мешали",
     )

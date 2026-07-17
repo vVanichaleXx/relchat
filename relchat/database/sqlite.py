@@ -91,6 +91,15 @@ CREATE TABLE IF NOT EXISTS user_settings (
   show_technical_details INTEGER NOT NULL DEFAULT 0,
   data_retention_days INTEGER,
   confirm_before_delete INTEGER NOT NULL DEFAULT 1,
+  automatic_analysis_master_enabled INTEGER NOT NULL DEFAULT 0,
+  automatic_default_notification_enabled INTEGER NOT NULL DEFAULT 1,
+  automatic_default_minimum_new_messages INTEGER NOT NULL DEFAULT 10,
+  automatic_default_inactivity_minutes INTEGER NOT NULL DEFAULT 45,
+  automatic_default_cooldown_hours INTEGER NOT NULL DEFAULT 12,
+  automatic_default_quiet_hours_enabled INTEGER NOT NULL DEFAULT 1,
+  automatic_default_quiet_hours_start TEXT NOT NULL DEFAULT '23:00',
+  automatic_default_quiet_hours_end TEXT NOT NULL DEFAULT '08:00',
+  automatic_default_preferred_analysis_mode TEXT NOT NULL DEFAULT 'local',
   created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
   updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
@@ -239,6 +248,98 @@ CREATE TABLE IF NOT EXISTS reminders (
   updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
+CREATE TABLE IF NOT EXISTS important_chat_settings (
+  bot_user_id INTEGER NOT NULL,
+  source TEXT NOT NULL DEFAULT 'telegram',
+  chat_id TEXT NOT NULL,
+  is_important INTEGER NOT NULL DEFAULT 0,
+  automatic_analysis_enabled INTEGER NOT NULL DEFAULT 0,
+  automatic_notification_enabled INTEGER NOT NULL DEFAULT 1,
+  minimum_new_messages INTEGER,
+  inactivity_threshold_minutes INTEGER,
+  cooldown_hours INTEGER,
+  quiet_hours_enabled INTEGER NOT NULL DEFAULT 1,
+  quiet_hours_start TEXT,
+  quiet_hours_end TEXT,
+  preferred_analysis_mode TEXT,
+  automatic_delivery_mode TEXT NOT NULL DEFAULT 'suggest',
+  last_automatic_analysis_at TEXT,
+  last_observed_message_at TEXT,
+  last_automatic_message_id INTEGER,
+  automation_paused_until TEXT,
+  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY(bot_user_id, source, chat_id)
+);
+
+CREATE TABLE IF NOT EXISTS automation_states (
+  bot_user_id INTEGER NOT NULL,
+  source TEXT NOT NULL DEFAULT 'telegram',
+  chat_id TEXT NOT NULL,
+  observed_message_cursor INTEGER,
+  last_observed_message_at TEXT,
+  last_automatic_message_id INTEGER,
+  last_automatic_analysis_at TEXT,
+  last_notification_at TEXT,
+  pending_new_message_count INTEGER NOT NULL DEFAULT 0,
+  pending_range_start_message_id INTEGER,
+  pending_range_end_message_id INTEGER,
+  pending_deliver_after TEXT,
+  last_pause_candidate_at TEXT,
+  suppressed_reason TEXT,
+  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY(bot_user_id, source, chat_id)
+);
+
+CREATE TABLE IF NOT EXISTS automatic_analysis_ranges (
+  range_id TEXT PRIMARY KEY,
+  bot_user_id INTEGER NOT NULL,
+  source TEXT NOT NULL DEFAULT 'telegram',
+  chat_id TEXT NOT NULL,
+  start_message_id INTEGER NOT NULL,
+  end_message_id INTEGER NOT NULL,
+  message_count INTEGER NOT NULL DEFAULT 0,
+  action TEXT NOT NULL,
+  analysis_id TEXT,
+  report_id TEXT,
+  completed_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  UNIQUE(bot_user_id, source, chat_id, start_message_id, end_message_id)
+);
+
+CREATE TABLE IF NOT EXISTS pending_automatic_notifications (
+  notification_id TEXT PRIMARY KEY,
+  bot_user_id INTEGER NOT NULL,
+  source TEXT NOT NULL DEFAULT 'telegram',
+  chat_id TEXT NOT NULL,
+  chat_title TEXT,
+  range_start_message_id INTEGER NOT NULL,
+  range_end_message_id INTEGER NOT NULL,
+  notification_type TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'pending',
+  deliver_after TEXT,
+  payload_json TEXT NOT NULL DEFAULT '{}',
+  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS period_comparisons (
+  comparison_id TEXT PRIMARY KEY,
+  bot_user_id INTEGER NOT NULL,
+  source TEXT NOT NULL DEFAULT 'telegram',
+  chat_id TEXT NOT NULL,
+  comparison_type TEXT NOT NULL,
+  current_report_id TEXT,
+  previous_report_id TEXT,
+  current_analysis_id TEXT,
+  previous_analysis_id TEXT,
+  status TEXT NOT NULL,
+  quality TEXT NOT NULL,
+  result_json TEXT NOT NULL DEFAULT '{}',
+  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
 CREATE INDEX IF NOT EXISTS idx_user_chats_user_saved
   ON user_chats(bot_user_id, is_saved, updated_at);
 
@@ -262,6 +363,18 @@ CREATE INDEX IF NOT EXISTS idx_reports_user_chat
 
 CREATE INDEX IF NOT EXISTS idx_reminders_user_status
   ON reminders(bot_user_id, status, updated_at);
+
+CREATE INDEX IF NOT EXISTS idx_important_chats_user
+  ON important_chat_settings(bot_user_id, is_important, updated_at);
+
+CREATE INDEX IF NOT EXISTS idx_automation_states_user_chat
+  ON automation_states(bot_user_id, source, chat_id);
+
+CREATE INDEX IF NOT EXISTS idx_pending_automatic_notifications_due
+  ON pending_automatic_notifications(status, deliver_after);
+
+CREATE INDEX IF NOT EXISTS idx_period_comparisons_user_chat
+  ON period_comparisons(bot_user_id, source, chat_id, created_at);
 """
 
 
@@ -295,6 +408,15 @@ def migrate_schema(conn: sqlite3.Connection) -> None:
     ensure_column(conn, "user_chats", "unread_count", "INTEGER NOT NULL DEFAULT 0")
     ensure_column(conn, "user_chats", "recent_analyzed_at", "TEXT")
     ensure_column(conn, "user_chats", "last_report_id", "TEXT")
+    ensure_column(conn, "user_settings", "automatic_analysis_master_enabled", "INTEGER NOT NULL DEFAULT 0")
+    ensure_column(conn, "user_settings", "automatic_default_notification_enabled", "INTEGER NOT NULL DEFAULT 1")
+    ensure_column(conn, "user_settings", "automatic_default_minimum_new_messages", "INTEGER NOT NULL DEFAULT 10")
+    ensure_column(conn, "user_settings", "automatic_default_inactivity_minutes", "INTEGER NOT NULL DEFAULT 45")
+    ensure_column(conn, "user_settings", "automatic_default_cooldown_hours", "INTEGER NOT NULL DEFAULT 12")
+    ensure_column(conn, "user_settings", "automatic_default_quiet_hours_enabled", "INTEGER NOT NULL DEFAULT 1")
+    ensure_column(conn, "user_settings", "automatic_default_quiet_hours_start", "TEXT NOT NULL DEFAULT '23:00'")
+    ensure_column(conn, "user_settings", "automatic_default_quiet_hours_end", "TEXT NOT NULL DEFAULT '08:00'")
+    ensure_column(conn, "user_settings", "automatic_default_preferred_analysis_mode", "TEXT NOT NULL DEFAULT 'local'")
     ensure_column(conn, "analysis_jobs", "progress_chat_id", "INTEGER")
     ensure_column(conn, "analysis_jobs", "progress_message_id", "INTEGER")
     ensure_column(conn, "analysis_jobs", "elapsed_seconds", "INTEGER")

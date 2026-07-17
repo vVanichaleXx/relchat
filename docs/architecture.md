@@ -32,6 +32,10 @@ relchat/
   bot/           Telegram Bot user interface boundary
   bot/services/ai_analysis.py
                  Optional OpenAI Responses API composition over normalized data
+  bot/services/period_comparison.py
+                 Comparable-period rules and metric-specific comparison logic
+  bot/services/automation.py
+                 Optional important-chat scheduled polling and automatic analysis orchestration
   cli/           Developer/debug command-line interface
   utils/         Low-level helpers with no product logic
   config.py      Application settings loaded from env and .env
@@ -134,6 +138,18 @@ when enabled by configuration and after persisted user consent. The OpenAI SDK
 is optional; bot startup and local deterministic analysis must work without it.
 Provider output is structured interpretation only; deterministic dimensions and
 the final 0-10 score are calculated locally before persistence/rendering.
+
+`bot/services/period_comparison.py` compares only comparable periods for the same
+chat. It rejects weak comparisons when message counts are too low, duration is
+not comparable, coverage is unknown, or analysis versions differ. It does not
+treat every numerical increase as improvement.
+
+`bot/services/automation.py` is an optional scheduled polling service for
+important chats. It starts with the bot only when `RELCHAT_AUTOMATION_ENABLED`
+is true, stops during application shutdown, uses stored cursors and completed
+ranges after restart, and keeps normal bot handlers non-blocking. The current
+implementation uses polling instead of MTProto live updates because it is easier
+to bound, restart, and test in the existing architecture.
 
 ### `cli/`
 
@@ -253,6 +269,26 @@ Telegram Bot analysis mode
   -> SQLite communication analysis metadata/result
   -> relchat.bot privacy-safe formatting
 ```
+
+Optional important-chat automation flow:
+
+```text
+Bot startup
+  -> automation service starts if env flag is enabled
+  -> load important chats with user master switch and chat switch enabled
+  -> poll Telegram through one MTProto client per cycle
+  -> save new normalized messages with bot_user_id ownership
+  -> evaluate pause heuristic using cursors, thresholds, cooldown, quiet hours, and completed ranges
+  -> send suggestion or run local/AI analysis according to chat settings and consent
+  -> persist reports, unified analysis result, comparison metadata, and completed automatic range
+```
+
+Restart behavior depends on persisted `automation_states`,
+`automatic_analysis_ranges`, pending notifications, user settings, and
+important-chat settings. Queued/running analysis jobs are marked failed safely by
+the existing startup cleanup if the bot restarts mid-job. The heuristic may miss
+activity while Telegram is unavailable and does not prove that a conversation
+ended.
 
 Target product flow:
 

@@ -89,6 +89,12 @@ RELCHAT_AI_MODEL=
 RELCHAT_AI_MAX_MESSAGES=300
 RELCHAT_AI_MAX_CHARS=30000
 RELCHAT_AI_TIMEOUT_SECONDS=90
+RELCHAT_AUTOMATION_ENABLED=false
+RELCHAT_AUTOMATION_POLL_SECONDS=300
+RELCHAT_AUTOMATION_MAX_NOTIFICATIONS_PER_DAY=5
+RELCHAT_AUTOMATION_DEFAULT_INACTIVITY_MINUTES=45
+RELCHAT_AUTOMATION_DEFAULT_MIN_MESSAGES=10
+RELCHAT_AUTOMATION_DEFAULT_COOLDOWN_HOURS=12
 ```
 
 Install the optional SDK only if AI analysis is enabled:
@@ -204,6 +210,29 @@ The bot only deletes local RelChat data when asked. It does not delete Telegram 
 RelChat’s normal result is called **Communication analysis**. It combines local deterministic metrics, rule-based events, optional AI interpretation, and a deterministic score into one readable report. It describes visible messaging behavior only. It is not a psychological diagnosis, personality diagnosis, relationship diagnosis, mental-health assessment, compatibility score, or prediction of hidden feelings.
 
 Local analysis stays on this machine and remains available without OpenAI. AI-enhanced analysis is optional.
+
+The analysis policy is intentionally direct. RelChat should say when a visible conversation is weak, uneven, dismissive, low-effort, or worse than a comparable period if the data supports that conclusion. It should not add unsupported comfort, invented excuses, hidden-feeling claims, diagnoses, or insults. Conclusions criticize observable communication behavior, not a participant’s human value.
+
+## Period Comparison
+
+RelChat can compare comparable periods for the same chat: current session vs previous session, last 7 days vs previous 7 days, last 30 days vs previous 30 days, a selected report vs a previous report with similar duration, and the latest saved analysis vs an earlier compatible analysis.
+
+Comparisons are shown only when both periods have enough messages, similar duration, known coverage, the same chat, and compatible analysis versions. If those rules are not met, the UI says there is not enough comparable data. More messages alone is not treated as better; each metric has its own direction rule.
+
+## Important Chats And Optional Automation
+
+Users can mark selected chats as important. Important status and automation settings are stored per `bot_user_id`, source, and chat. New users have automation disabled by default.
+
+Automatic analysis is opt-in at two levels:
+
+- `RELCHAT_AUTOMATION_ENABLED=true` must be set for the background service to run.
+- The user-level master switch and the chat-level automatic analysis switch must both be on.
+
+Default automation settings are conservative: 10 minimum new messages, 45 minutes with no new messages, 12 hour cooldown, quiet hours from 23:00 to 08:00, and suggestion mode rather than fully automatic analysis. The heuristic never knows that a conversation definitely ended; it only treats a recent active conversation as appearing to have paused.
+
+Users can disable automation for one chat, pause a chat for 24 hours, or disable all automatic analysis from Settings. Quiet hours delay delivery instead of sending notifications immediately.
+
+AI automation never bypasses existing consent. If AI-enhanced automation is selected and consent is missing or revoked, RelChat does not send messages to OpenAI silently.
 
 ## Optional AI Communication Analysis
 

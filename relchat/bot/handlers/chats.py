@@ -4,6 +4,8 @@ from telegram import Update
 from telegram.ext import ContextTypes
 
 from relchat.bot.formatters import (
+    format_important_chat_detail,
+    format_important_chats,
     format_period_prompt,
     format_remove_chat_confirmation,
     format_report_overview,
@@ -14,6 +16,8 @@ from relchat.bot.handlers.chat_home import show_chat_home
 from relchat.bot.handlers.common import bot_user_id, edit_or_reply, get_context_settings
 from relchat.bot.keyboards import (
     period_keyboard,
+    important_chat_actions_keyboard,
+    important_chat_list_keyboard,
     remove_chat_confirmation_keyboard,
     report_sections_keyboard,
     saved_chat_actions_keyboard,
@@ -26,16 +30,22 @@ from relchat.database.repositories import (
     delete_reports_for_chat,
     get_report,
     get_user_settings,
+    list_important_chats,
     list_user_chats,
     remove_user_chat,
     rename_user_chat,
+    set_chat_important,
     set_user_chat_favorite,
+    update_important_chat_setting,
 )
 from relchat.database.sqlite import connect, init_db
 
 
 CHAT_LIST_STATE = "my_chats_current_list"
 CHAT_SECTION_STATE = "my_chats_current_section"
+IMPORTANT_CHAT_LIST_STATE = "important_chats_current_list"
+IMPORTANT_CHAT_PAGE_STATE = "important_chats_current_page"
+IMPORTANT_PAGE_SIZE = 10
 
 
 async def show_my_chats_home(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -50,6 +60,7 @@ async def show_my_chats_home(update: Update, context: ContextTypes.DEFAULT_TYPE)
             "favorites": len(list_user_chats(conn, user_id, section="favorites", limit=1000)),
             "recent": len(list_user_chats(conn, user_id, section="recent", limit=1000)),
             "saved": len(list_user_chats(conn, user_id, section="saved", limit=1000)),
+            "important": len(list_important_chats(conn, user_id, limit=1000)),
         }
         language = get_user_settings(conn, user_id).get("language", "en")
     await edit_or_reply(update, format_my_chats_home(counts, language=language), reply_markup=my_chats_keyboard(language))
@@ -59,13 +70,16 @@ async def handle_chats_callback(update: Update, context: ContextTypes.DEFAULT_TY
     if len(parts) >= 3 and parts[1] == "nav" and parts[2] == "chats":
         await show_my_chats_home(update, context)
         return True
-    if len(parts) < 2 or parts[1] not in {"chats", "chat"}:
+    if len(parts) < 2 or parts[1] not in {"chats", "chat", "imp"}:
         return False
     if parts[1] == "chats" and len(parts) >= 4 and parts[2] == "sec":
         await show_chat_section(update, context, parts[3])
         return True
     if parts[1] == "chat":
         await handle_chat_action(update, context, parts)
+        return True
+    if parts[1] == "imp":
+        await handle_important_chat_action(update, context, parts)
         return True
     return False
 
@@ -78,7 +92,11 @@ async def show_chat_section(update: Update, context: ContextTypes.DEFAULT_TYPE, 
         "favorites": "favorites",
         "recent": "recent",
         "saved": "saved",
+        "important": "important",
     }.get(section, "saved")
+    if normalized == "important":
+        await show_important_chats(update, context, page=0)
+        return
     with connect(settings.db_path) as conn:
         chats = list_user_chats(conn, user_id, section=normalized, limit=50)
         language = get_user_settings(conn, user_id).get("language", "en")
@@ -86,6 +104,7 @@ async def show_chat_section(update: Update, context: ContextTypes.DEFAULT_TYPE, 
         "favorites": t(language, "my_chats_favorites"),
         "recent": t(language, "my_chats_recent"),
         "saved": t(language, "my_chats_saved"),
+        "important": t(language, "important_chats_title"),
     }.get(normalized, t(language, "my_chats_saved"))
     context.user_data[CHAT_LIST_STATE] = chats
     context.user_data[CHAT_SECTION_STATE] = normalized
@@ -171,6 +190,76 @@ async def handle_chat_action(update: Update, context: ContextTypes.DEFAULT_TYPE,
         await show_my_chats_home(update, context)
 
 
+async def show_important_chats(update: Update, context: ContextTypes.DEFAULT_TYPE, *, page: int = 0) -> None:
+    settings = get_context_settings(context)
+    init_db(settings.db_path)
+    user_id = bot_user_id(update)
+    page = max(0, int(page))
+    with connect(settings.db_path) as conn:
+        chats = list_important_chats(conn, user_id, limit=IMPORTANT_PAGE_SIZE + 1, offset=page * IMPORTANT_PAGE_SIZE)
+        language = get_user_settings(conn, user_id).get("language", "en")
+    has_next = len(chats) > IMPORTANT_PAGE_SIZE
+    visible = chats[:IMPORTANT_PAGE_SIZE]
+    context.user_data[IMPORTANT_CHAT_LIST_STATE] = visible
+    context.user_data[IMPORTANT_CHAT_PAGE_STATE] = page
+    await edit_or_reply(
+        update,
+        format_important_chats(visible, page=page, language=language),
+        reply_markup=important_chat_list_keyboard(visible, page=page, has_previous=page > 0, has_next=has_next, language=language),
+    )
+
+
+async def handle_important_chat_action(update: Update, context: ContextTypes.DEFAULT_TYPE, parts: list[str]) -> None:
+    if len(parts) < 3:
+        return
+    settings = get_context_settings(context)
+    user_id = bot_user_id(update)
+    with connect(settings.db_path) as conn:
+        language = get_user_settings(conn, user_id).get("language", "en")
+    action = parts[2]
+    if action == "page" and len(parts) >= 4:
+        try:
+            page = int(parts[3])
+        except ValueError:
+            page = 0
+        await show_important_chats(update, context, page=page)
+        return
+    if len(parts) < 4:
+        return
+    try:
+        index = int(parts[3])
+    except ValueError:
+        await edit_or_reply(update, "This chat is no longer available.")
+        return
+    chats = important_chats(context)
+    if index < 0 or index >= len(chats):
+        await edit_or_reply(update, "This chat is no longer available.")
+        return
+    chat = chats[index]
+    if action == "item":
+        await edit_or_reply(update, format_important_chat_detail(chat, language=language), reply_markup=important_chat_actions_keyboard(chat, index, language=language))
+        return
+    if action == "open":
+        await show_chat_home(update, context, chat, parent={"kind": "my_chats", "section": "important"})
+        return
+    if action == "settings":
+        await show_chat_home(update, context, chat, parent={"kind": "my_chats", "section": "important"})
+        from relchat.bot.handlers.chat_home import show_chat_home_section
+
+        await show_chat_home_section(update, context, "settings")
+        return
+    if action == "disable":
+        with connect(settings.db_path) as conn:
+            update_important_chat_setting(conn, user_id, chat["source"], chat["chat_id"], "automatic_analysis_enabled", False)
+            chats[index] = {**chat, "automatic_analysis_enabled": False}
+        await edit_or_reply(update, format_important_chat_detail(chats[index], language=language), reply_markup=important_chat_actions_keyboard(chats[index], index, language=language))
+        return
+    if action == "remove":
+        with connect(settings.db_path) as conn:
+            set_chat_important(conn, user_id, chat["source"], chat["chat_id"], False)
+        await show_important_chats(update, context, page=int(context.user_data.get(IMPORTANT_CHAT_PAGE_STATE) or 0))
+
+
 async def handle_chats_text(update: Update, context: ContextTypes.DEFAULT_TYPE, mode: str, text: str) -> bool:
     if mode != "rename_chat":
         return False
@@ -197,4 +286,9 @@ async def handle_chats_text(update: Update, context: ContextTypes.DEFAULT_TYPE, 
 
 def current_chats(context: ContextTypes.DEFAULT_TYPE) -> list[dict]:
     chats = context.user_data.get(CHAT_LIST_STATE, [])
+    return chats if isinstance(chats, list) else []
+
+
+def important_chats(context: ContextTypes.DEFAULT_TYPE) -> list[dict]:
+    chats = context.user_data.get(IMPORTANT_CHAT_LIST_STATE, [])
     return chats if isinstance(chats, list) else []

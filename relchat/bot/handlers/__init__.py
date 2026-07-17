@@ -6,6 +6,7 @@ from telegram import Update
 from telegram.ext import CallbackQueryHandler, CommandHandler, ContextTypes, MessageHandler, filters
 
 from relchat.bot.handlers.analysis import handle_analysis_callback, handle_analysis_text
+from relchat.bot.handlers.automation import handle_automation_callback
 from relchat.bot.handlers.chat_home import handle_chat_home_callback
 from relchat.bot.handlers.chats import handle_chats_callback, handle_chats_text
 from relchat.bot.handlers.common import edit_or_reply, require_access, show_safe_error, user_language
@@ -64,6 +65,7 @@ async def callback_router(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         for handler in [
             handle_onboarding_callback,
             handle_navigation_callback,
+            handle_automation_callback,
             handle_chat_home_callback,
             handle_analysis_callback,
             handle_chats_callback,

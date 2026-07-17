@@ -64,6 +64,7 @@ def my_chats_keyboard(language: str = "en"):
 
     return InlineKeyboardMarkup(
         [
+            [InlineKeyboardButton(t(language, "important_chats_title"), callback_data="rc:chats:sec:important")],
             [InlineKeyboardButton(t(language, "button_favorites"), callback_data="rc:chats:sec:favorites")],
             [InlineKeyboardButton(t(language, "button_recently_analyzed"), callback_data="rc:chats:sec:recent")],
             [InlineKeyboardButton(t(language, "button_saved_chats"), callback_data="rc:chats:sec:saved")],
@@ -105,11 +106,44 @@ def saved_chat_actions_keyboard(chat: dict, index: int, *, language: str = "en")
     return InlineKeyboardMarkup(rows)
 
 
+def important_chat_list_keyboard(chats: Sequence[dict], *, page: int = 0, has_previous: bool = False, has_next: bool = False, language: str = "en"):
+    from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+
+    rows = []
+    for index, chat in enumerate(chats):
+        rows.append([InlineKeyboardButton(chat_row_label_from_dict(chat, index=index), callback_data=f"rc:imp:item:{index}")])
+    navigation = []
+    if has_previous:
+        navigation.append(InlineKeyboardButton(t(language, "button_previous_period"), callback_data=f"rc:imp:page:{max(0, page - 1)}"))
+    if has_next:
+        navigation.append(InlineKeyboardButton(t(language, "button_next_period"), callback_data=f"rc:imp:page:{page + 1}"))
+    if navigation:
+        rows.append(navigation)
+    rows.append([InlineKeyboardButton(t(language, "button_back"), callback_data="rc:nav:chats")])
+    return InlineKeyboardMarkup(rows)
+
+
+def important_chat_actions_keyboard(chat: dict, index: int, *, language: str = "en"):
+    from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+
+    return InlineKeyboardMarkup(
+        [
+            [InlineKeyboardButton(t(language, "button_open_chat"), callback_data=f"rc:imp:open:{index}")],
+            [InlineKeyboardButton(t(language, "button_chat_settings"), callback_data=f"rc:imp:settings:{index}")],
+            [InlineKeyboardButton(t(language, "automation_disable_chat"), callback_data=f"rc:imp:disable:{index}")],
+            [InlineKeyboardButton(t(language, "important_remove"), callback_data=f"rc:imp:remove:{index}")],
+            [InlineKeyboardButton(t(language, "button_back"), callback_data="rc:chats:sec:important")],
+        ]
+    )
+
+
 def chat_home_keyboard(chat: dict, *, has_report: bool, running: bool = False, language: str = "en"):
     from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 
     rows = []
     rows.extend(primary_chat_home_actions(has_report=has_report, running=running, language=language))
+    important_label = t(language, "important_remove") if chat.get("is_important") else t(language, "important_mark")
+    rows.append([InlineKeyboardButton(important_label, callback_data="rc:home:important:toggle")])
     rows.append([InlineKeyboardButton(t(language, "button_details"), callback_data="rc:home:details")])
     rows.append(
         [
@@ -211,6 +245,21 @@ def ai_result_keyboard(*, language: str = "en"):
     )
 
 
+def ai_detail_keyboard(*, language: str = "en"):
+    from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+
+    return InlineKeyboardMarkup(
+        [
+            [InlineKeyboardButton(t(language, "button_compare_periods"), callback_data="rc:home:ai:comparison")],
+            [
+                InlineKeyboardButton(t(language, "button_full_analysis"), callback_data="rc:home:ai:full"),
+                InlineKeyboardButton(t(language, "ai_advice_title"), callback_data="rc:home:ai:advice"),
+            ],
+            [InlineKeyboardButton(t(language, "button_chat_home"), callback_data="rc:home:open")],
+        ]
+    )
+
+
 def analysis_result_keyboard(report_id: str, *, language: str = "en"):
     from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 
@@ -221,6 +270,46 @@ def analysis_result_keyboard(report_id: str, *, language: str = "en"):
             [InlineKeyboardButton(t(language, "button_chat_home"), callback_data="rc:home:open")],
         ]
     )
+
+
+def analysis_detail_keyboard(report_id: str, *, language: str = "en"):
+    from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+
+    return InlineKeyboardMarkup(
+        [
+            [InlineKeyboardButton(t(language, "button_compare_periods"), callback_data=f"rc:rep:compare:{report_id}")],
+            [
+                InlineKeyboardButton(t(language, "button_previous_period"), callback_data=f"rc:rep:prev:{report_id}"),
+                InlineKeyboardButton(t(language, "button_next_period"), callback_data=f"rc:rep:next:{report_id}"),
+            ],
+            [InlineKeyboardButton(t(language, "button_back_to_analysis"), callback_data=f"rc:rep:full:{report_id}")],
+            [InlineKeyboardButton(t(language, "button_chat_home"), callback_data="rc:home:open")],
+        ]
+    )
+
+
+def automation_suggestion_keyboard(notification_id: str, *, language: str = "en"):
+    from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+
+    return InlineKeyboardMarkup(
+        [
+            [InlineKeyboardButton(t(language, "button_analyze"), callback_data=f"rc:auto:analyze:{notification_id}")],
+            [InlineKeyboardButton(t(language, "button_not_now"), callback_data=f"rc:auto:notnow:{notification_id}")],
+            [InlineKeyboardButton(t(language, "automation_disable_chat"), callback_data=f"rc:auto:disable:{notification_id}")],
+        ]
+    )
+
+
+def automatic_analysis_result_keyboard(report_id: str, *, source_notification_id: str | None = None, language: str = "en"):
+    from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+
+    rows = [
+        [InlineKeyboardButton(t(language, "button_full_analysis"), callback_data=f"rc:rep:full:{report_id}")],
+    ]
+    if source_notification_id:
+        rows.append([InlineKeyboardButton(t(language, "automation_disable_chat"), callback_data=f"rc:auto:disable:{source_notification_id}")])
+    rows.append([InlineKeyboardButton(t(language, "button_chat_home"), callback_data="rc:home:open")])
+    return InlineKeyboardMarkup(rows)
 
 
 def chat_home_section_keyboard(chat: dict, *, language: str = "en", section: str | None = None):
@@ -236,6 +325,65 @@ def chat_home_section_keyboard(chat: dict, *, language: str = "en", section: str
         ]
     )
     return InlineKeyboardMarkup(rows)
+
+
+def chat_settings_keyboard(settings: dict, *, language: str = "en"):
+    from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+
+    auto = bool(settings.get("automatic_analysis_enabled"))
+    notify = bool(settings.get("automatic_notification_enabled"))
+    quiet = bool(settings.get("quiet_hours_enabled"))
+    mode = settings.get("preferred_analysis_mode") or "local"
+    delivery = settings.get("automatic_delivery_mode") or "suggest"
+    rows = [
+        [InlineKeyboardButton(f"{t(language, 'automation_analysis')}: {on_off(auto, language)}", callback_data="rc:home:set:auto")],
+        [InlineKeyboardButton(f"{t(language, 'automation_notifications')}: {on_off(notify, language)}", callback_data="rc:home:set:notify")],
+        [
+            InlineKeyboardButton("30m", callback_data="rc:home:set:inactive:30"),
+            InlineKeyboardButton("45m", callback_data="rc:home:set:inactive:45"),
+            InlineKeyboardButton("1h", callback_data="rc:home:set:inactive:60"),
+            InlineKeyboardButton("2h", callback_data="rc:home:set:inactive:120"),
+        ],
+        [
+            InlineKeyboardButton("5", callback_data="rc:home:set:min:5"),
+            InlineKeyboardButton("10", callback_data="rc:home:set:min:10"),
+            InlineKeyboardButton("20", callback_data="rc:home:set:min:20"),
+            InlineKeyboardButton("50", callback_data="rc:home:set:min:50"),
+        ],
+        [
+            InlineKeyboardButton("6h", callback_data="rc:home:set:cooldown:6"),
+            InlineKeyboardButton("12h", callback_data="rc:home:set:cooldown:12"),
+            InlineKeyboardButton("24h", callback_data="rc:home:set:cooldown:24"),
+        ],
+        [
+            InlineKeyboardButton(selected_label(t(language, "automation_mode_local"), mode == "local", language), callback_data="rc:home:set:mode:local"),
+            InlineKeyboardButton(selected_label(t(language, "automation_mode_ai"), mode == "ai", language), callback_data="rc:home:set:mode:ai"),
+        ],
+        [
+            InlineKeyboardButton(selected_label(t(language, "automation_suggest"), delivery == "suggest", language), callback_data="rc:home:set:delivery:suggest"),
+            InlineKeyboardButton(selected_label(t(language, "automation_auto_run"), delivery == "auto", language), callback_data="rc:home:set:delivery:auto"),
+        ],
+        [InlineKeyboardButton(f"{t(language, 'quiet_hours')}: {on_off(quiet, language)}", callback_data="rc:home:set:quiet")],
+        [
+            InlineKeyboardButton(f"{t(language, 'quiet_start')} {settings.get('quiet_hours_start') or '23:00'}", callback_data="rc:home:set:qstart"),
+            InlineKeyboardButton(f"{t(language, 'quiet_end')} {settings.get('quiet_hours_end') or '08:00'}", callback_data="rc:home:set:qend"),
+        ],
+        [
+            InlineKeyboardButton(t(language, "automation_pause_24h"), callback_data="rc:home:set:pause24"),
+            InlineKeyboardButton(t(language, "automation_disable_chat"), callback_data="rc:home:set:disable"),
+        ],
+        [InlineKeyboardButton(t(language, "automation_disable_all"), callback_data="rc:home:set:disable_all")],
+        [InlineKeyboardButton(t(language, "button_chat_home"), callback_data="rc:home:open")],
+    ]
+    return InlineKeyboardMarkup(rows)
+
+
+def on_off(value: bool, language: str) -> str:
+    return t(language, "yes") if value else t(language, "no")
+
+
+def selected_label(label: str, selected: bool, language: str) -> str:
+    return f"{t(language, 'selected_prefix')} {label}" if selected else label
 
 
 def chat_home_reports_keyboard(reports: Sequence[dict], *, language: str = "en"):
@@ -621,6 +769,9 @@ def settings_keyboard(settings: dict, *, language: str = "en"):
     progress = "On" if settings.get("progress_notifications") else "Off"
     tech = "On" if settings.get("show_technical_details") else "Off"
     confirm = "On" if settings.get("confirm_before_delete") else "Off"
+    master = "On" if settings.get("automatic_analysis_master_enabled") else "Off"
+    auto_notify = "On" if settings.get("automatic_default_notification_enabled") else "Off"
+    quiet = "On" if settings.get("automatic_default_quiet_hours_enabled") else "Off"
     return InlineKeyboardMarkup(
         [
             [InlineKeyboardButton("Language", callback_data="rc:set:language")],
@@ -631,6 +782,30 @@ def settings_keyboard(settings: dict, *, language: str = "en"):
             [InlineKeyboardButton("Data retention period", callback_data="rc:set:retention")],
             [InlineKeyboardButton(f"Confirm before deleting: {confirm}", callback_data="rc:set:toggle:confirm_before_delete")],
             [InlineKeyboardButton("Reset onboarding", callback_data="rc:set:reset_onboarding")],
+            [InlineKeyboardButton(f"{t(language, 'automation_master_switch')}: {master}", callback_data="rc:set:toggle:automatic_analysis_master_enabled")],
+            [InlineKeyboardButton(f"{t(language, 'automation_notifications')}: {auto_notify}", callback_data="rc:set:toggle:automatic_default_notification_enabled")],
+            [
+                InlineKeyboardButton("30m", callback_data="rc:set:auto_inactive:30"),
+                InlineKeyboardButton("45m", callback_data="rc:set:auto_inactive:45"),
+                InlineKeyboardButton("1h", callback_data="rc:set:auto_inactive:60"),
+                InlineKeyboardButton("2h", callback_data="rc:set:auto_inactive:120"),
+            ],
+            [
+                InlineKeyboardButton("5", callback_data="rc:set:auto_min:5"),
+                InlineKeyboardButton("10", callback_data="rc:set:auto_min:10"),
+                InlineKeyboardButton("20", callback_data="rc:set:auto_min:20"),
+                InlineKeyboardButton("50", callback_data="rc:set:auto_min:50"),
+            ],
+            [
+                InlineKeyboardButton("6h", callback_data="rc:set:auto_cooldown:6"),
+                InlineKeyboardButton("12h", callback_data="rc:set:auto_cooldown:12"),
+                InlineKeyboardButton("24h", callback_data="rc:set:auto_cooldown:24"),
+            ],
+            [
+                InlineKeyboardButton(t(language, "automation_mode_local"), callback_data="rc:set:auto_mode:local"),
+                InlineKeyboardButton(t(language, "automation_mode_ai"), callback_data="rc:set:auto_mode:ai"),
+            ],
+            [InlineKeyboardButton(f"{t(language, 'quiet_hours')}: {quiet}", callback_data="rc:set:toggle:automatic_default_quiet_hours_enabled")],
             [InlineKeyboardButton("Local data management", callback_data="rc:set:data")],
             [InlineKeyboardButton(t(language, "button_revoke_ai_consent"), callback_data="rc:set:ai_consent_revoke")],
             [InlineKeyboardButton(t(language, "button_main"), callback_data=CB_MAIN)],

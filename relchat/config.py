@@ -41,6 +41,13 @@ class Settings:
     ai_max_messages: int = 300
     ai_max_chars: int = 30000
     ai_timeout_seconds: int = 90
+    automation_enabled: bool = False
+    automation_poll_seconds: int = 300
+    automation_max_notifications_per_day: int = 5
+    automation_default_inactivity_minutes: int = 45
+    automation_default_min_messages: int = 10
+    automation_default_cooldown_hours: int = 12
+    automation_max_concurrency: int = 2
 
 
 def parse_allowed_user_ids(value: str | None) -> frozenset[int]:
@@ -107,6 +114,13 @@ def get_settings() -> Settings:
         ai_max_messages=parse_positive_int(os.environ.get("RELCHAT_AI_MAX_MESSAGES"), default=300),
         ai_max_chars=parse_positive_int(os.environ.get("RELCHAT_AI_MAX_CHARS"), default=30000),
         ai_timeout_seconds=parse_positive_int(os.environ.get("RELCHAT_AI_TIMEOUT_SECONDS"), default=90),
+        automation_enabled=parse_bool(os.environ.get("RELCHAT_AUTOMATION_ENABLED"), default=False),
+        automation_poll_seconds=parse_positive_int(os.environ.get("RELCHAT_AUTOMATION_POLL_SECONDS"), default=300),
+        automation_max_notifications_per_day=parse_positive_int(os.environ.get("RELCHAT_AUTOMATION_MAX_NOTIFICATIONS_PER_DAY"), default=5),
+        automation_default_inactivity_minutes=parse_positive_int(os.environ.get("RELCHAT_AUTOMATION_DEFAULT_INACTIVITY_MINUTES"), default=45),
+        automation_default_min_messages=parse_positive_int(os.environ.get("RELCHAT_AUTOMATION_DEFAULT_MIN_MESSAGES"), default=10),
+        automation_default_cooldown_hours=parse_positive_int(os.environ.get("RELCHAT_AUTOMATION_DEFAULT_COOLDOWN_HOURS"), default=12),
+        automation_max_concurrency=parse_positive_int(os.environ.get("RELCHAT_AUTOMATION_MAX_CONCURRENCY"), default=2),
     )
 
 

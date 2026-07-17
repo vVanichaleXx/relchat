@@ -60,10 +60,22 @@ WEAK_REPLY_CATEGORIES = {
     "missing_acknowledgement",
 }
 SEVERITY_VALUES = {"low", "medium", "high"}
+VERDICT_LEVELS = {"strong", "good", "mixed", "weak", "very_weak", "insufficient_data"}
+DIRECT_FINDING_EVIDENCE_TYPES = {"metric", "event", "reply_pattern", "period_comparison"}
+RECOMMENDED_ACTIONS = {
+    "continue",
+    "clarify",
+    "wait",
+    "reduce_pressure",
+    "stop_repeating_topic",
+    "no_action",
+}
 FORBIDDEN_OUTPUT_TERMS = {
     "avoidant",
     "narcissist",
     "narcissism",
+    "psychopath",
+    "sociopath",
     "personality disorder",
     "depression",
     "anxiety disorder",
@@ -72,11 +84,25 @@ FORBIDDEN_OUTPUT_TERMS = {
     "lost interest",
     "they love you",
     "they like you",
+    "they hate you",
     "definitely love",
+    "definitely do not care",
     "for sure lost interest",
     "make them chase",
     "manipulate",
+    "manipulator",
     "manipulation tactic",
+    "stupid person",
+    "garbage reply",
+    "loser",
+    "toxic person",
+    "do not worry",
+    "don't worry",
+    "everything is probably fine",
+    "probably fine",
+    "may just be busy",
+    "might just be busy",
+    "wonderful in its own way",
 }
 
 PHONE_RE = re.compile(r"(?<!\w)\+?\d[\d\s().-]{6,}\d(?!\w)")
@@ -115,19 +141,48 @@ COMMUNICATION_ANALYSIS_SCHEMA: dict[str, Any] = {
     "additionalProperties": False,
     "required": [
         "summary",
+        "verdict",
         "conversation_state",
         "confidence",
+        "direct_findings",
         "participant_analysis",
         "positive_patterns",
         "problem_patterns",
         "weak_reply_patterns",
+        "uncertainties",
+        "recommended_action",
         "advice",
         "limitations",
     ],
     "properties": {
         "summary": {"type": "string"},
-        "conversation_state": {"type": "string", "enum": sorted(CONVERSATION_STATES - {"insufficient_data"})},
+        "verdict": {
+            "type": "object",
+            "additionalProperties": False,
+            "required": ["level", "headline", "explanation"],
+            "properties": {
+                "level": {"type": "string", "enum": sorted(VERDICT_LEVELS)},
+                "headline": {"type": "string"},
+                "explanation": {"type": "string"},
+            },
+        },
+        "conversation_state": {"type": "string", "enum": sorted(CONVERSATION_STATES)},
         "confidence": {"type": "string", "enum": ["low", "medium", "high"]},
+        "direct_findings": {
+            "type": "array",
+            "maxItems": 8,
+            "items": {
+                "type": "object",
+                "additionalProperties": False,
+                "required": ["finding", "severity", "confidence", "evidence_type"],
+                "properties": {
+                    "finding": {"type": "string"},
+                    "severity": {"type": "string", "enum": ["low", "medium", "high"]},
+                    "confidence": {"type": "string", "enum": ["low", "medium", "high"]},
+                    "evidence_type": {"type": "string", "enum": sorted(DIRECT_FINDING_EVIDENCE_TYPES)},
+                },
+            },
+        },
         "participant_analysis": {
             "type": "object",
             "additionalProperties": False,
@@ -152,6 +207,16 @@ COMMUNICATION_ANALYSIS_SCHEMA: dict[str, Any] = {
                     "severity": {"type": "string", "enum": ["low", "medium", "high"]},
                     "anonymous_message_reference": {"type": "string"},
                 },
+            },
+        },
+        "uncertainties": {"type": "array", "maxItems": 6, "items": {"type": "string"}},
+        "recommended_action": {
+            "type": "object",
+            "additionalProperties": False,
+            "required": ["action", "explanation"],
+            "properties": {
+                "action": {"type": "string", "enum": sorted(RECOMMENDED_ACTIONS)},
+                "explanation": {"type": "string"},
             },
         },
         "advice": {
@@ -286,13 +351,23 @@ def system_prompt() -> str:
 
 COMMUNICATION_ANALYSIS_SYSTEM_PROMPT = (
     "You create evidence-based communication analysis from anonymized Telegram message data. "
-    "Analyze visible communication only. Do not diagnose personality, mental health, attachment style, or hidden feelings. "
-    "Do not claim attraction, love, deliberate testing, manipulation, or loss of interest as fact. "
-    "Use cautious language and distinguish observed facts from possible interpretations. "
+    "Be direct and honest. Do not manufacture positive framing, silver linings, or comfort without evidence. "
+    "Analyze visible communication only. Separate facts, interpretation, and uncertainty. "
+    "Do not diagnose personality, mental health, attachment style, or hidden feelings. "
+    "Do not claim attraction, love, hatred, deliberate testing, manipulation, or loss of interest as fact. "
+    "Do not invent excuses for either participant. Alternative explanations may appear only as uncertainty notes, "
+    "for example: the reason cannot be determined from messages alone. "
+    "Criticize communication behavior, not the personal worth of a participant. "
+    "You may say weak conversation, unbalanced dialogue, low-effort reply, dismissive answer, hostile wording, "
+    "repeated avoidance of a direct question, conversation was worse than usual, visible engagement was low, "
+    "or one side carried the dialogue when evidence supports it. "
+    "Never use insults, identity labels, diagnoses, or certainty about hidden feelings. "
+    "Say when the conversation was weak. Say when the evidence is insufficient. "
     "Base conclusions on supplied local metrics, event summaries, deterministic dimensions, and selected anonymized messages. "
     "Do not invent numeric evidence and do not choose the final score. "
     "Never include Telegram identities, usernames, phone numbers, IDs, or private message quotes. "
     "Never advise manipulation, jealousy tactics, pressure, deliberate silence, or making someone chase. "
+    "Structured findings must include confidence and evidence type. "
     "Return only schema-valid JSON."
 )
 
@@ -734,10 +809,11 @@ def validate_ai_result(
         "advice",
         "limitations",
     }
+    extended = {"verdict", "direct_findings", "uncertainties", "recommended_action"}
     missing = required - data.keys()
     if missing:
         raise AIAnalysisError("malformed_output")
-    extra = set(data.keys()) - required
+    extra = set(data.keys()) - required - extended
     if extra:
         raise AIAnalysisError("malformed_output")
     conversation_state = str(data.get("conversation_state") or "")
@@ -762,6 +838,17 @@ def validate_ai_result(
     data["score_state"] = score
     data["coverage"] = safe_coverage(coverage or {})
     data["analysis_version"] = ANALYSIS_VERSION
+    data["verdict"] = validate_verdict(data.get("verdict"), score_state=score, message_count=message_count)
+    data["direct_findings"] = validate_direct_findings(
+        data.get("direct_findings"),
+        fallback=derive_direct_findings(data),
+    )
+    data["uncertainties"] = validate_uncertainties(data.get("uncertainties"), data.get("limitations"))
+    data["recommended_action"] = validate_recommended_action(
+        data.get("recommended_action"),
+        advice=data.get("advice"),
+        score_state=score,
+    )
     if contains_forbidden_claims(data):
         raise AIAnalysisError("unsafe_output")
     return data
@@ -918,6 +1005,151 @@ def validate_advice(value: Any) -> list[dict[str, Any]]:
     return result[:3]
 
 
+def validate_verdict(value: Any, *, score_state: dict[str, Any], message_count: int) -> dict[str, str]:
+    fallback = derive_verdict(score_state, message_count=message_count)
+    if not isinstance(value, dict):
+        return fallback
+    level = str(value.get("level") or fallback["level"])
+    if level not in VERDICT_LEVELS:
+        raise AIAnalysisError("malformed_output")
+    headline = sanitize_ai_text(value.get("headline"), limit=160) or fallback["headline"]
+    explanation = sanitize_ai_text(value.get("explanation"), limit=520) or fallback["explanation"]
+    return {"level": level, "headline": headline, "explanation": explanation}
+
+
+def derive_verdict(score_state: dict[str, Any], *, message_count: int) -> dict[str, str]:
+    if message_count < 10 or score_state.get("insufficient_data") or score_state.get("score") is None:
+        return {
+            "level": "insufficient_data",
+            "headline": "Insufficient comparable evidence.",
+            "explanation": "The visible data is too limited for a stable conclusion.",
+        }
+    score = float(score_state.get("score") or 0)
+    if score >= 8.0:
+        level = "strong"
+        headline = "The visible communication was strong."
+    elif score >= 6.5:
+        level = "good"
+        headline = "The visible communication was generally good."
+    elif score >= 5.0:
+        level = "mixed"
+        headline = "The visible communication was mixed."
+    elif score >= 3.5:
+        level = "weak"
+        headline = "The visible communication was weak."
+    else:
+        level = "very_weak"
+        headline = "The visible communication was very weak."
+    return {
+        "level": level,
+        "headline": headline,
+        "explanation": "This verdict is based on observable metrics and rule-based evidence, not hidden feelings or intent.",
+    }
+
+
+def validate_direct_findings(value: Any, *, fallback: list[dict[str, str]]) -> list[dict[str, str]]:
+    rows = value if isinstance(value, list) else fallback
+    result: list[dict[str, str]] = []
+    for row in rows[:8]:
+        if not isinstance(row, dict):
+            continue
+        severity = str(row.get("severity") or "low")
+        confidence = str(row.get("confidence") or "low")
+        evidence_type = str(row.get("evidence_type") or "metric")
+        if severity not in SEVERITY_VALUES or confidence not in CONFIDENCE_VALUES or evidence_type not in DIRECT_FINDING_EVIDENCE_TYPES:
+            raise AIAnalysisError("malformed_output")
+        finding = sanitize_ai_text(row.get("finding"), limit=360)
+        if finding:
+            result.append(
+                {
+                    "finding": finding,
+                    "severity": severity,
+                    "confidence": confidence,
+                    "evidence_type": evidence_type,
+                }
+            )
+    return result
+
+
+def derive_direct_findings(data: dict[str, Any]) -> list[dict[str, str]]:
+    findings: list[dict[str, str]] = []
+    for row in data.get("problem_patterns") or []:
+        if not isinstance(row, dict):
+            continue
+        title = sanitize_ai_text(row.get("title"), limit=120)
+        explanation = sanitize_ai_text(row.get("explanation"), limit=240)
+        if not title:
+            continue
+        text = title if not explanation else f"{title}: {explanation}"
+        evidence_type = "event" if row.get("evidence_type") == "event" else "metric"
+        findings.append(
+            {
+                "finding": text,
+                "severity": str(row.get("severity") or "low") if str(row.get("severity") or "low") in SEVERITY_VALUES else "low",
+                "confidence": str(data.get("confidence") or "low") if str(data.get("confidence") or "low") in CONFIDENCE_VALUES else "low",
+                "evidence_type": evidence_type,
+            }
+        )
+    for row in data.get("weak_reply_patterns") or []:
+        if not isinstance(row, dict):
+            continue
+        explanation = sanitize_ai_text(row.get("explanation"), limit=260)
+        if explanation:
+            findings.append(
+                {
+                    "finding": explanation,
+                    "severity": str(row.get("severity") or "low") if str(row.get("severity") or "low") in SEVERITY_VALUES else "low",
+                    "confidence": str(data.get("confidence") or "low") if str(data.get("confidence") or "low") in CONFIDENCE_VALUES else "low",
+                    "evidence_type": "reply_pattern",
+                }
+            )
+    return findings[:8]
+
+
+def validate_uncertainties(value: Any, limitations: Any) -> list[str]:
+    rows = value if isinstance(value, list) else []
+    uncertainties = string_list(rows, limit=6, text_limit=260)
+    if not uncertainties:
+        uncertainties = [
+            "The reason cannot be determined from messages alone.",
+        ]
+        for item in string_list(limitations, limit=2, text_limit=220):
+            if item not in uncertainties:
+                uncertainties.append(item)
+    return uncertainties[:6]
+
+
+def validate_recommended_action(value: Any, *, advice: Any, score_state: dict[str, Any]) -> dict[str, str]:
+    fallback = derive_recommended_action(advice=advice, score_state=score_state)
+    if not isinstance(value, dict):
+        return fallback
+    action = str(value.get("action") or fallback["action"])
+    if action not in RECOMMENDED_ACTIONS:
+        raise AIAnalysisError("malformed_output")
+    explanation = sanitize_ai_text(value.get("explanation"), limit=420) or fallback["explanation"]
+    return {"action": action, "explanation": explanation}
+
+
+def derive_recommended_action(*, advice: Any, score_state: dict[str, Any]) -> dict[str, str]:
+    rows = advice if isinstance(advice, list) else []
+    first = rows[0] if rows and isinstance(rows[0], dict) else {}
+    score = score_state.get("score")
+    if score_state.get("insufficient_data") or score is None:
+        return {
+            "action": "no_action",
+            "explanation": "There is not enough visible data for a specific behavioral recommendation.",
+        }
+    if float(score) < 5.0:
+        return {
+            "action": "reduce_pressure",
+            "explanation": sanitize_ai_text(first.get("explanation"), limit=420) or "Avoid sending several new messages before there is visible reciprocal initiative.",
+        }
+    return {
+        "action": "continue",
+        "explanation": sanitize_ai_text(first.get("explanation"), limit=420) or "Continue with clear, direct messages and watch for reciprocal engagement.",
+    }
+
+
 def string_list(value: Any, *, limit: int = 8, text_limit: int = 240) -> list[str]:
     rows = value if isinstance(value, list) else []
     return [sanitize_ai_text(item, limit=text_limit) for item in rows[:limit] if str(item).strip()]
@@ -1043,27 +1275,37 @@ def local_fallback_analysis(
     plan_count = int(event_counts.get("plan_candidate", 0) or 0)
     positive_patterns = local_positive_patterns(message_count, metrics, chat_type)
     problem_patterns = local_problem_patterns(unanswered, follow_up_count, chat_type)
+    local_score = communication_score_from_dimensions(dimensions, message_count=message_count)
+    verdict = local_verdict(messages, metrics, dimensions, local_score, chat_type=chat_type)
+    direct_findings = local_direct_findings(messages, metrics, dimensions, unanswered, follow_up_count, chat_type=chat_type)
     result = {
-        "summary": local_summary_sentence(chat_type, message_count, unanswered),
+        "summary": local_summary_sentence(chat_type, message_count, unanswered, direct_findings),
+        "verdict": verdict,
         "conversation_state": "needs_follow_up" if unanswered or follow_up_count else ("casual" if message_count >= 10 else "insufficient_data"),
         "confidence": confidence,
+        "direct_findings": direct_findings,
         "participant_analysis": {
             "you": {
                 "summary": local_participant_summary(messages, outgoing=True),
                 "observable_patterns": local_participant_patterns(messages, outgoing=True),
-                "strengths": ["Keeps visible conversation activity available for analysis."] if message_count else [],
+                "strengths": local_participant_strengths(messages, outgoing=True),
                 "possible_improvements": ["Ask one clear question at a time when you need a direct answer."] if unanswered else [],
             },
             "other": {
                 "summary": local_participant_summary(messages, outgoing=False),
                 "observable_patterns": local_participant_patterns(messages, outgoing=False),
-                "strengths": ["Replies appear in the selected period."] if any(not message.is_outgoing for message in messages) else [],
-                "possible_improvements": ["Some visible questions may need clearer follow-up."] if unanswered else [],
+                "strengths": local_participant_strengths(messages, outgoing=False),
+                "possible_improvements": ["Answer direct questions clearly when a response is visible in the conversation."] if unanswered else [],
             },
         },
         "positive_patterns": positive_patterns,
         "problem_patterns": problem_patterns,
         "weak_reply_patterns": local_weak_reply_patterns(unanswered),
+        "uncertainties": [
+            "The reason cannot be determined from messages alone.",
+            "No AI text interpretation was used.",
+        ],
+        "recommended_action": local_recommended_action(unanswered=unanswered, follow_up_count=follow_up_count, score_state=local_score),
         "advice": local_advice(unanswered=unanswered, follow_up_count=follow_up_count, plan_count=plan_count),
         "limitations": [
             f"Used local deterministic metrics for {period_label}.",
@@ -1081,16 +1323,19 @@ def local_fallback_analysis(
     return validate_ai_result(result, dimensions=dimensions, message_count=message_count, coverage=coverage)
 
 
-def local_summary_sentence(chat_type: str, message_count: int, unanswered: int) -> str:
+def local_summary_sentence(chat_type: str, message_count: int, unanswered: int, findings: Sequence[dict[str, str]] | None = None) -> str:
     if message_count <= 0:
-        return "There is not enough visible activity in the selected period."
+        return "There is not enough visible activity to support a communication conclusion."
     if chat_type == "group":
         return "Group activity was summarized from local message counts, questions, plans, and follow-up candidates."
     if chat_type == "channel":
         return "Channel activity was summarized from local posting cadence and quiet periods."
+    high_findings = [item for item in findings or [] if item.get("severity") in {"medium", "high"}]
+    if high_findings:
+        return high_findings[0]["finding"]
     if unanswered:
-        return "The conversation has visible activity, with some questions or follow-ups that may need attention."
-    return "The conversation has visible activity and no major local follow-up count in this period."
+        return f"{unanswered} direct question candidate(s) received no visible response inside the local response window."
+    return "The conversation has visible activity without a strong local warning in this period."
 
 
 def local_positive_patterns(message_count: int, metrics: dict[str, Any], chat_type: str) -> list[dict[str, str]]:
@@ -1109,7 +1354,7 @@ def local_problem_patterns(unanswered: int, follow_up_count: int, chat_type: str
         rows.append(
             {
                 "title": "Unanswered questions",
-                "explanation": f"{unanswered} question candidate(s) may still need a response.",
+                "explanation": f"{unanswered} direct question candidate(s) received no visible response inside the local response window.",
                 "severity": "medium" if unanswered >= 3 else "low",
                 "evidence_type": "event",
             }
@@ -1118,7 +1363,7 @@ def local_problem_patterns(unanswered: int, follow_up_count: int, chat_type: str
         rows.append(
             {
                 "title": "Open follow-ups",
-                "explanation": f"{follow_up_count} follow-up candidate(s) may need attention.",
+                "explanation": f"{follow_up_count} follow-up candidate(s) remained visible in this period.",
                 "severity": "medium" if follow_up_count >= 3 else "low",
                 "evidence_type": "event",
             }
@@ -1166,11 +1411,157 @@ def local_advice(*, unanswered: int, follow_up_count: int, plan_count: int) -> l
             {
                 "priority": 1,
                 "title": "Keep the next message simple",
-                "explanation": "Continue with one clear topic so the other participant can respond without extra pressure.",
+                "explanation": "Continue with one clear topic and check whether reciprocal initiative appears.",
                 "example": "How does Thursday evening work for you?",
             }
         )
     return rows[:3]
+
+
+def local_verdict(
+    messages: Sequence[Message],
+    metrics: dict[str, Any],
+    dimensions: dict[str, dict[str, Any]],
+    score_state: dict[str, Any],
+    *,
+    chat_type: str,
+) -> dict[str, str]:
+    verdict = derive_verdict(score_state, message_count=len(messages))
+    if len(messages) < 10:
+        return verdict
+    if chat_type != "one_to_one":
+        return verdict
+    unanswered = len(metrics.get("unanswered_questions") or [])
+    imbalance = one_sided_message_share(messages)
+    if unanswered >= 3 or imbalance >= 0.75:
+        return {
+            "level": "weak",
+            "headline": "The conversation was uneven.",
+            "explanation": "Local metrics show one side carried more visible activity or several direct questions received no visible response.",
+        }
+    return verdict
+
+
+def local_direct_findings(
+    messages: Sequence[Message],
+    metrics: dict[str, Any],
+    dimensions: dict[str, dict[str, Any]],
+    unanswered: int,
+    follow_up_count: int,
+    *,
+    chat_type: str,
+) -> list[dict[str, str]]:
+    findings: list[dict[str, str]] = []
+    if len(messages) < 10:
+        findings.append(
+            {
+                "finding": "The visible data is too limited for a stable conclusion.",
+                "severity": "low",
+                "confidence": "high",
+                "evidence_type": "metric",
+            }
+        )
+        return findings
+    if chat_type == "one_to_one":
+        outgoing = sum(1 for message in messages if message.is_outgoing)
+        incoming = len(messages) - outgoing
+        total = max(1, len(messages))
+        if max(outgoing, incoming) / total >= 0.7:
+            carried = "you" if outgoing > incoming else "the other participant"
+            findings.append(
+                {
+                    "finding": f"The dialogue was unbalanced. {carried.capitalize()} carried most visible message volume.",
+                    "severity": "medium",
+                    "confidence": "medium",
+                    "evidence_type": "metric",
+                }
+            )
+        initiation = metrics.get("initiation_balance") or {}
+        session_count = int(initiation.get("session_count") or 0)
+        outgoing_starts = outgoing_session_starts(messages)
+        if session_count >= 3:
+            other_starts = max(0, session_count - outgoing_starts)
+            if outgoing_starts == 0 or other_starts == 0:
+                side = "You" if outgoing_starts == 0 else "The other participant"
+                findings.append(
+                    {
+                        "finding": f"{side} did not restart the conversation during this period.",
+                        "severity": "medium",
+                        "confidence": "medium",
+                        "evidence_type": "metric",
+                    }
+                )
+    if unanswered:
+        findings.append(
+            {
+                "finding": f"{unanswered} direct question candidate(s) received no visible response.",
+                "severity": "high" if unanswered >= 5 else "medium",
+                "confidence": "medium",
+                "evidence_type": "event",
+            }
+        )
+    if follow_up_count:
+        findings.append(
+            {
+                "finding": f"{follow_up_count} follow-up candidate(s) remained visible in the selected period.",
+                "severity": "medium" if follow_up_count >= 3 else "low",
+                "confidence": "medium",
+                "evidence_type": "event",
+            }
+        )
+    score = communication_score_from_dimensions(dimensions, message_count=len(messages))
+    if isinstance(score.get("score"), (int, float)) and float(score["score"]) < 5.0:
+        findings.append(
+            {
+                "finding": "The visible data does not support a positive communication conclusion for this period.",
+                "severity": "high" if float(score["score"]) < 3.5 else "medium",
+                "confidence": score.get("confidence", "low"),
+                "evidence_type": "metric",
+            }
+        )
+    return findings[:8]
+
+
+def local_recommended_action(*, unanswered: int, follow_up_count: int, score_state: dict[str, Any]) -> dict[str, str]:
+    score = score_state.get("score")
+    if score_state.get("insufficient_data") or score is None:
+        return {
+            "action": "no_action",
+            "explanation": "There is not enough visible data for a specific recommendation.",
+        }
+    if unanswered >= 3 or follow_up_count >= 3:
+        return {
+            "action": "stop_repeating_topic",
+            "explanation": "Do not send several new messages about the same unresolved point. Ask one direct question or wait for reciprocal initiative.",
+        }
+    if float(score) < 5.0:
+        return {
+            "action": "reduce_pressure",
+            "explanation": "Visible engagement was low or uneven, so adding pressure is unlikely to improve clarity.",
+        }
+    return {
+        "action": "continue",
+        "explanation": "Continue with clear, direct messages and watch whether the other participant also develops topics.",
+    }
+
+
+def local_participant_strengths(messages: Sequence[Message], *, outgoing: bool) -> list[str]:
+    count = sum(1 for message in messages if message.is_outgoing is outgoing)
+    if count <= 0:
+        return []
+    total = max(1, len(messages))
+    share = count / total
+    if 0.4 <= share <= 0.6:
+        return ["Participates at a comparable visible message volume."]
+    return []
+
+
+def one_sided_message_share(messages: Sequence[Message]) -> float:
+    if not messages:
+        return 0.0
+    outgoing = sum(1 for message in messages if message.is_outgoing)
+    incoming = len(messages) - outgoing
+    return max(outgoing, incoming) / len(messages)
 
 
 def local_participant_summary(messages: Sequence[Message], *, outgoing: bool) -> str:

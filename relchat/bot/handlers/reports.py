@@ -17,6 +17,7 @@ from relchat.bot.formatters import (
 )
 from relchat.bot.handlers.common import bot_user_id, edit_or_reply, get_context_settings
 from relchat.bot.keyboards import (
+    analysis_detail_keyboard,
     analysis_result_keyboard,
     delete_report_confirmation_keyboard,
     report_list_keyboard,
@@ -24,6 +25,7 @@ from relchat.bot.keyboards import (
     reports_home_keyboard,
     review_keyboard,
 )
+from relchat.bot.localization import t
 from relchat.bot.state import get_flow
 from relchat.database.repositories import (
     clear_reports,
@@ -31,6 +33,7 @@ from relchat.database.repositories import (
     get_report,
     get_user_settings,
     latest_ai_analysis_for_report,
+    latest_period_comparison_for_report,
     list_analysis_jobs,
     list_reports,
     set_report_favorite,
@@ -115,16 +118,35 @@ async def handle_report_action(update: Update, context: ContextTypes.DEFAULT_TYP
         report = get_report(conn, report_id)
         language = get_user_settings(conn, user_id).get("language", "en")
         analysis = latest_ai_analysis_for_report(conn, user_id, report_id) if report else None
+        comparison = latest_period_comparison_for_report(conn, user_id, report_id) if report else None
     if not report or report["bot_user_id"] != user_id:
         await edit_or_reply(update, "This local report is no longer available.")
         return
+    if analysis and comparison:
+        analysis = {**analysis, "comparison": comparison.get("result") or {}}
     if action in {"open", "full"}:
         text = (
             format_ai_result_section(analysis, "full", language=language)
             if analysis and analysis.get("status") == "completed"
             else format_unified_analysis_result(report, language=language)
         )
-        await edit_or_reply_chunked(update, text, reply_markup=analysis_result_keyboard(report_id, language=language))
+        keyboard = analysis_detail_keyboard(report_id, language=language) if action == "full" else analysis_result_keyboard(report_id, language=language)
+        await edit_or_reply_chunked(update, text, reply_markup=keyboard)
+        return
+    if action == "compare":
+        text = (
+            format_ai_result_section(analysis or {"comparison": comparison.get("result") if comparison else None}, "comparison", language=language)
+            if comparison
+            else format_ai_result_section({"comparison": {"status": "insufficient_data"}}, "comparison", language=language)
+        )
+        await edit_or_reply(update, text, reply_markup=analysis_detail_keyboard(report_id, language=language))
+        return
+    if action in {"prev", "next"}:
+        target = adjacent_report_for_chat(settings, user_id, report, previous=action == "prev")
+        if target is None:
+            await edit_or_reply(update, t(language, "comparison_not_enough"), reply_markup=analysis_detail_keyboard(report_id, language=language))
+            return
+        await edit_or_reply(update, format_report_overview(target), reply_markup=report_sections_keyboard(target, language=language))
         return
     if action == "advice":
         text = (
@@ -186,3 +208,17 @@ async def edit_or_reply_chunked(update: Update, text: str, *, reply_markup=None)
         return
     for index, chunk in enumerate(chunks[1:], start=1):
         await message.reply_text(chunk, reply_markup=reply_markup if index == len(chunks) - 1 else None)
+
+
+def adjacent_report_for_chat(settings, user_id: int, report: dict, *, previous: bool) -> dict | None:
+    with connect(settings.db_path) as conn:
+        reports = list_reports(conn, user_id, chat_id=report["chat_id"], limit=100)
+    ids = [item.get("report_id") for item in reports]
+    try:
+        index = ids.index(report.get("report_id"))
+    except ValueError:
+        return None
+    target_index = index + 1 if previous else index - 1
+    if target_index < 0 or target_index >= len(reports):
+        return None
+    return reports[target_index]

@@ -31,7 +31,24 @@ def run_bot(settings: Settings | None = None) -> int:
     with connect(settings.db_path) as conn:
         mark_stale_running_jobs_failed(conn)
 
-    application = ApplicationBuilder().token(settings.telegram_bot_token).build()
+    async def post_init(application):
+        from relchat.bot.services.automation import start_automation_service
+
+        service = start_automation_service(application, settings)
+        await service.start()
+
+    async def post_shutdown(application):
+        from relchat.bot.services.automation import stop_automation_service
+
+        await stop_automation_service(application)
+
+    application = (
+        ApplicationBuilder()
+        .token(settings.telegram_bot_token)
+        .post_init(post_init)
+        .post_shutdown(post_shutdown)
+        .build()
+    )
     application.bot_data["settings"] = settings
     register_handlers(application)
     print(f"Starting RelChat bot. Allowed user IDs configured: {len(settings.allowed_user_ids)}.")

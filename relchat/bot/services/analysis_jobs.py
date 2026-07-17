@@ -11,6 +11,7 @@ from typing import Any
 from relchat.bot.formatters import format_job_failure, format_job_progress, format_unified_analysis_result
 from relchat.bot.keyboards import analysis_result_keyboard, job_progress_keyboard
 from relchat.bot.services.ai_analysis import AIAnalysisError, CONSENT_VERSION, local_fallback_analysis, run_ai_communication_analysis
+from relchat.bot.services.period_comparison import compare_report_to_previous
 from relchat.bot.services.ux_audit import record_ux_event
 from relchat.bot.services.report_service import build_report
 from relchat.bot.state import JOB_RUNNING_STATES
@@ -18,8 +19,10 @@ from relchat.config import Settings
 from relchat.core.models import Message
 from relchat.database.repositories import (
     create_ai_analysis,
+    create_period_comparison,
     get_analysis_job,
     get_user_settings,
+    list_reports,
     save_conversation,
     save_user_message,
     update_analysis_job,
@@ -210,6 +213,9 @@ async def run_analysis_job(application: Any, settings: Settings, job_id: str) ->
                 chat_type=conversation.conversation_type,
                 started=started,
             )
+        comparison = persist_report_comparison(settings, job=job, report=report, ai_analysis=ai_analysis)
+        if ai_analysis is not None and comparison is not None:
+            ai_analysis = {**ai_analysis, "comparison": comparison.get("result") or comparison}
         with connect(settings.db_path) as conn:
             update_analysis_job(
                 conn,
@@ -461,6 +467,45 @@ def create_local_communication_analysis(
         },
     )
     return analysis
+
+
+def persist_report_comparison(
+    settings: Settings,
+    *,
+    job: dict[str, Any],
+    report: dict[str, Any],
+    ai_analysis: dict[str, Any] | None,
+) -> dict[str, Any] | None:
+    with connect(settings.db_path) as conn:
+        reports = list_reports(conn, job["bot_user_id"], chat_id=job["chat_id"], limit=10)
+        previous_reports = [item for item in reports if item.get("report_id") != report.get("report_id")]
+        comparison = compare_report_to_previous(report, previous_reports)
+        stored = create_period_comparison(
+            conn,
+            bot_user_id=job["bot_user_id"],
+            source=job.get("source") or "telegram",
+            chat_id=job["chat_id"],
+            comparison_type=comparison.get("comparison_type") or "selected_report_vs_previous",
+            status=comparison.get("status") or "insufficient_data",
+            quality=comparison.get("quality") or "weak",
+            result=comparison,
+            current_report_id=report.get("report_id"),
+            previous_report_id=(comparison.get("previous") or {}).get("report_id"),
+            current_analysis_id=ai_analysis.get("analysis_id") if ai_analysis else None,
+        )
+        conn.commit()
+    record_ux_event(
+        settings,
+        "comparison_generated",
+        payload={
+            "job_id": job.get("job_id"),
+            "status": comparison.get("status"),
+            "quality": comparison.get("quality"),
+            "message_count_current": (comparison.get("current") or {}).get("message_count"),
+            "message_count_previous": (comparison.get("previous") or {}).get("message_count"),
+        },
+    )
+    return stored
 
 
 async def edit_completed_message(

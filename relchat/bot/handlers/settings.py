@@ -93,10 +93,38 @@ async def handle_setting_action(update: Update, context: ContextTypes.DEFAULT_TY
         return
     if action == "toggle" and len(parts) >= 4:
         key = parts[3]
-        if key in {"progress_notifications", "show_technical_details", "confirm_before_delete"}:
+        if key in {
+            "progress_notifications",
+            "show_technical_details",
+            "confirm_before_delete",
+            "automatic_analysis_master_enabled",
+            "automatic_default_notification_enabled",
+            "automatic_default_quiet_hours_enabled",
+        }:
             with connect(settings.db_path) as conn:
                 current = get_user_settings(conn, user_id).get(key)
                 update_user_setting(conn, user_id, key, not bool(current))
+        await show_settings(update, context)
+        return
+    if action == "auto_inactive" and len(parts) >= 4:
+        with connect(settings.db_path) as conn:
+            update_user_setting(conn, user_id, "automatic_default_inactivity_minutes", int(parts[3]))
+        await show_settings(update, context)
+        return
+    if action == "auto_min" and len(parts) >= 4:
+        with connect(settings.db_path) as conn:
+            update_user_setting(conn, user_id, "automatic_default_minimum_new_messages", int(parts[3]))
+        await show_settings(update, context)
+        return
+    if action == "auto_cooldown" and len(parts) >= 4:
+        with connect(settings.db_path) as conn:
+            update_user_setting(conn, user_id, "automatic_default_cooldown_hours", int(parts[3]))
+        await show_settings(update, context)
+        return
+    if action == "auto_mode" and len(parts) >= 4:
+        mode = parts[3] if parts[3] in {"local", "ai"} else "local"
+        with connect(settings.db_path) as conn:
+            update_user_setting(conn, user_id, "automatic_default_preferred_analysis_mode", mode)
         await show_settings(update, context)
         return
     if action == "modules":

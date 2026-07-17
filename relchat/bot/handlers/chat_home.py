@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from telegram import Update
@@ -23,11 +24,13 @@ from relchat.bot.formatters import (
 )
 from relchat.bot.handlers.common import bot_user_id, edit_or_reply, get_context_settings
 from relchat.bot.keyboards import (
+    ai_detail_keyboard,
     ai_result_keyboard,
     chat_home_keyboard,
     chat_home_details_menu_keyboard,
     chat_home_reports_keyboard,
     chat_home_section_keyboard,
+    chat_settings_keyboard,
     main_keyboard,
     period_keyboard,
     timeline_page_keyboard,
@@ -41,7 +44,18 @@ from relchat.bot.services.timeline_service import (
     render_timeline_chart,
 )
 from relchat.bot.state import get_flow, JOB_RUNNING_STATES
-from relchat.database.repositories import get_user_settings, latest_ai_analysis_for_chat, list_analysis_jobs, list_messages, list_reminders, list_reports
+from relchat.database.repositories import (
+    get_important_chat_settings,
+    get_user_settings,
+    latest_ai_analysis_for_chat,
+    list_analysis_jobs,
+    list_messages,
+    list_reminders,
+    list_reports,
+    set_chat_important,
+    update_important_chat_setting,
+    update_user_setting,
+)
 from relchat.database.sqlite import connect, init_db
 
 
@@ -76,6 +90,8 @@ async def show_chat_home(
         messages = list_messages(conn, chat["chat_id"], source=chat.get("source") or "telegram")
         reminders = reminders_for_chat(conn, user_id, chat, limit=1000)
         running = is_analysis_running(conn, user_id, chat)
+        important = get_important_chat_settings(conn, user_id, chat.get("source") or "telegram", chat["chat_id"])
+        chat = {**chat, "is_important": important.get("is_important")}
     view_model = build_chat_home_view_model(
         chat=chat,
         reports=reports,
@@ -131,6 +147,12 @@ async def handle_chat_home_callback(update: Update, context: ContextTypes.DEFAUL
     if action == "details":
         await show_chat_home_details(update, context)
         return True
+    if action == "important" and len(parts) >= 4 and parts[3] == "toggle":
+        await toggle_important_chat(update, context)
+        return True
+    if action == "set":
+        await handle_chat_setting_callback(update, context, parts)
+        return True
     if action == "ai" and len(parts) >= 4:
         await show_ai_analysis_section(update, context, parts[3])
         return True
@@ -154,6 +176,8 @@ async def show_chat_home_section(update: Update, context: ContextTypes.DEFAULT_T
         previous_report = reports[1] if len(reports) > 1 else None
         pending_followups = pending_followup_count(conn, user_id, chat)
         confirmed_reminders = confirmed_reminder_count(conn, user_id, chat)
+        important = get_important_chat_settings(conn, user_id, chat.get("source") or "telegram", chat["chat_id"])
+        chat = {**chat, "is_important": important.get("is_important")}
     if section == "reports":
         context.user_data[CHAT_HOME_REPORTS] = reports
         await edit_or_reply(
@@ -180,9 +204,87 @@ async def show_chat_home_section(update: Update, context: ContextTypes.DEFAULT_T
         return
     await edit_or_reply(
         update,
-        format_chat_home_section(section, chat=chat, report=report, pending_followups=pending_followups, language=language),
-        reply_markup=chat_home_section_keyboard(chat, language=language),
+        format_chat_home_section(section, chat=chat, report=report, pending_followups=pending_followups, important_settings=important, language=language),
+        reply_markup=chat_settings_keyboard(important, language=language) if section == "settings" else chat_home_section_keyboard(chat, language=language),
     )
+
+
+async def toggle_important_chat(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    chat = current_chat(context)
+    if chat is None:
+        await show_expired_navigation(update, context)
+        return
+    settings = get_context_settings(context)
+    user_id = bot_user_id(update)
+    source = chat.get("source") or "telegram"
+    with connect(settings.db_path) as conn:
+        language = get_user_settings(conn, user_id).get("language", "en")
+        current = get_important_chat_settings(conn, user_id, source, chat["chat_id"])
+        updated = set_chat_important(conn, user_id, source, chat["chat_id"], not current.get("is_important"))
+    chat = {**chat, "is_important": updated.get("is_important")}
+    context.user_data[CHAT_HOME_STATE] = chat_home_state(chat)
+    await edit_or_reply(
+        update,
+        format_chat_home(chat, language=language),
+        reply_markup=chat_home_keyboard(chat, has_report=bool(chat.get("last_report_id")), language=language),
+    )
+
+
+async def handle_chat_setting_callback(update: Update, context: ContextTypes.DEFAULT_TYPE, parts: list[str]) -> None:
+    chat = current_chat(context)
+    if chat is None:
+        await show_expired_navigation(update, context)
+        return
+    settings = get_context_settings(context)
+    user_id = bot_user_id(update)
+    source = chat.get("source") or "telegram"
+    action = parts[3] if len(parts) >= 4 else ""
+    with connect(settings.db_path) as conn:
+        language = get_user_settings(conn, user_id).get("language", "en")
+        current = get_important_chat_settings(conn, user_id, source, chat["chat_id"])
+        set_chat_important(conn, user_id, source, chat["chat_id"], True)
+        if action == "auto":
+            current = update_important_chat_setting(conn, user_id, source, chat["chat_id"], "automatic_analysis_enabled", not current.get("automatic_analysis_enabled"))
+        elif action == "notify":
+            current = update_important_chat_setting(conn, user_id, source, chat["chat_id"], "automatic_notification_enabled", not current.get("automatic_notification_enabled"))
+        elif action == "inactive" and len(parts) >= 5:
+            current = update_important_chat_setting(conn, user_id, source, chat["chat_id"], "inactivity_threshold_minutes", int(parts[4]))
+        elif action == "min" and len(parts) >= 5:
+            current = update_important_chat_setting(conn, user_id, source, chat["chat_id"], "minimum_new_messages", int(parts[4]))
+        elif action == "cooldown" and len(parts) >= 5:
+            current = update_important_chat_setting(conn, user_id, source, chat["chat_id"], "cooldown_hours", int(parts[4]))
+        elif action == "mode" and len(parts) >= 5:
+            current = update_important_chat_setting(conn, user_id, source, chat["chat_id"], "preferred_analysis_mode", parts[4])
+        elif action == "delivery" and len(parts) >= 5:
+            current = update_important_chat_setting(conn, user_id, source, chat["chat_id"], "automatic_delivery_mode", parts[4])
+        elif action == "quiet":
+            current = update_important_chat_setting(conn, user_id, source, chat["chat_id"], "quiet_hours_enabled", not current.get("quiet_hours_enabled"))
+        elif action == "qstart":
+            current = update_important_chat_setting(conn, user_id, source, chat["chat_id"], "quiet_hours_start", next_quiet_time(current.get("quiet_hours_start"), starts=True))
+        elif action == "qend":
+            current = update_important_chat_setting(conn, user_id, source, chat["chat_id"], "quiet_hours_end", next_quiet_time(current.get("quiet_hours_end"), starts=False))
+        elif action == "pause24":
+            paused_until = (datetime.now(timezone.utc) + timedelta(hours=24)).isoformat(timespec="seconds")
+            current = update_important_chat_setting(conn, user_id, source, chat["chat_id"], "automation_paused_until", paused_until)
+        elif action == "disable":
+            current = update_important_chat_setting(conn, user_id, source, chat["chat_id"], "automatic_analysis_enabled", False)
+        elif action == "disable_all":
+            update_user_setting(conn, user_id, "automatic_analysis_master_enabled", False)
+        current = get_important_chat_settings(conn, user_id, source, chat["chat_id"])
+    chat = {**chat, "is_important": current.get("is_important"), "important_settings": current}
+    context.user_data[CHAT_HOME_STATE] = chat_home_state(chat)
+    await edit_or_reply(
+        update,
+        format_chat_home_section("settings", chat=chat, report=None, important_settings=current, language=language),
+        reply_markup=chat_settings_keyboard(current, language=language),
+    )
+
+
+def next_quiet_time(value: str | None, *, starts: bool) -> str:
+    options = ["22:00", "23:00", "00:00"] if starts else ["07:00", "08:00", "09:00"]
+    current = value if value in options else options[0]
+    index = options.index(current)
+    return options[(index + 1) % len(options)]
 
 
 async def handle_timeline_callback(update: Update, context: ContextTypes.DEFAULT_TYPE, parts: list[str]) -> None:
@@ -352,15 +454,23 @@ async def show_ai_analysis_section(update: Update, context: ContextTypes.DEFAULT
             source=chat.get("source") or "telegram",
             chat_id=chat["chat_id"],
         )
+        comparison = None
+        if analysis:
+            from relchat.database.repositories import latest_period_comparison_for_analysis
+
+            comparison = latest_period_comparison_for_analysis(conn, user_id, analysis["analysis_id"])
     if not analysis:
         await edit_or_reply(update, t(language, "empty_no_report"), reply_markup=chat_home_section_keyboard(chat, language=language))
         return
+    if comparison:
+        analysis = {**analysis, "comparison": comparison.get("result") or {}}
     text = (
         format_ai_result_overview(analysis, chat_title=chat.get("title"), language=language)
         if section == "overview"
         else format_ai_result_section(analysis, section, language=language)
     )
-    await edit_or_reply(update, text, reply_markup=ai_result_keyboard(language=language))
+    keyboard = ai_detail_keyboard(language=language) if section in {"full", "comparison"} else ai_result_keyboard(language=language)
+    await edit_or_reply(update, text, reply_markup=keyboard)
 
 
 async def open_chat_home_report(update: Update, context: ContextTypes.DEFAULT_TYPE, value: str) -> None:
@@ -456,6 +566,7 @@ def chat_home_state(chat: dict[str, Any]) -> dict[str, Any]:
         "local_title": chat.get("local_title"),
         "username": chat.get("username"),
         "is_favorite": bool(chat.get("is_favorite")),
+        "is_important": bool(chat.get("is_important")),
         "last_report_id": chat.get("last_report_id"),
     }
 
