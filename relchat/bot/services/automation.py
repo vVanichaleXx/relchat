@@ -11,6 +11,7 @@ from relchat.bot.formatters import format_automatic_analysis_result, format_auto
 from relchat.bot.keyboards import automatic_analysis_result_keyboard, automation_suggestion_keyboard
 from relchat.bot.services.ai_analysis import AIAnalysisError, CONSENT_VERSION, run_ai_communication_analysis
 from relchat.bot.services.analysis_jobs import create_local_communication_analysis, safe_error_code
+from relchat.bot.services.context import classify_context
 from relchat.bot.services.period_comparison import compare_report_to_previous
 from relchat.bot.services.report_service import build_report
 from relchat.bot.services.ux_audit import record_ux_event
@@ -309,6 +310,7 @@ class AutomaticAnalysisService:
             ]
             if not messages:
                 return
+            context_classification = classify_context(chat=row, messages=messages).to_dict()
             analysis_mode = settings.get("preferred_analysis_mode") or "local"
             if analysis_mode == "ai" and not has_active_ai_consent(conn, bot_user_id):
                 await self.application.bot.send_message(
@@ -346,7 +348,7 @@ class AutomaticAnalysisService:
         analysis = None
         ai_failed = False
         if analysis_mode == "ai":
-            analysis, ai_failed = await self.run_ai_or_local_fallback(row, job, report, messages, events)
+            analysis, ai_failed = await self.run_ai_or_local_fallback(row, job, report, messages, events, language=language, context_classification=context_classification)
         else:
             analysis = create_local_communication_analysis(
                 settings=self.settings,
@@ -355,6 +357,8 @@ class AutomaticAnalysisService:
                 messages=messages,
                 events=events,
                 chat_type=row.get("chat_type") or "one_to_one",
+                language=language,
+                context_classification=context_classification,
                 started=time.monotonic(),
             )
         with connect(self.settings.db_path) as conn:
@@ -411,7 +415,17 @@ class AutomaticAnalysisService:
         )
         record_ux_event(self.settings, "automatic_analysis_completed", payload={"mode": analysis_mode, "message_count": len(messages), "ai_failed": ai_failed})
 
-    async def run_ai_or_local_fallback(self, row: dict[str, Any], job: dict[str, Any], report: dict[str, Any], messages: list[Message], events: Sequence[Any]) -> tuple[dict[str, Any] | None, bool]:
+    async def run_ai_or_local_fallback(
+        self,
+        row: dict[str, Any],
+        job: dict[str, Any],
+        report: dict[str, Any],
+        messages: list[Message],
+        events: Sequence[Any],
+        *,
+        language: str,
+        context_classification: dict[str, Any],
+    ) -> tuple[dict[str, Any] | None, bool]:
         try:
             outcome = await run_ai_communication_analysis(
                 self.settings,
@@ -419,6 +433,8 @@ class AutomaticAnalysisService:
                 messages=messages,
                 events=events,
                 period_label=job.get("period_label") or "",
+                language=language,
+                context_classification=context_classification,
             )
             with connect(self.settings.db_path) as conn:
                 analysis = create_ai_analysis(
@@ -457,6 +473,8 @@ class AutomaticAnalysisService:
                 messages=messages,
                 events=events,
                 chat_type=row.get("chat_type") or "one_to_one",
+                language=language,
+                context_classification=context_classification,
                 started=time.monotonic(),
             )
             return analysis, True

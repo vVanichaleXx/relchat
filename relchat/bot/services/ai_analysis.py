@@ -9,20 +9,22 @@ from datetime import datetime, timedelta
 from typing import Any
 
 from relchat.analytics.metrics import summarize
+from relchat.bot.localization import t
+from relchat.bot.services.context import ANALYSIS_FRAMEWORK_VERSION, classify_context, context_from_dict
 from relchat.config import Settings
 from relchat.core.models import ConversationEvent, Message
 from relchat.events.extractor import summarize_events
 
 
 CONSENT_VERSION = "v1"
-ANALYSIS_VERSION = "communication_v1"
+ANALYSIS_VERSION = "communication_v2"
 POSITIVE_DIMENSIONS = {
-    "reciprocity": 0.20,
+    "reciprocity": 0.15,
     "initiative_balance": 0.15,
-    "reply_quality": 0.15,
+    "reply_quality": 0.17,
     "topic_continuation": 0.15,
-    "respectfulness": 0.15,
-    "question_engagement": 0.10,
+    "respectfulness": 0.16,
+    "question_engagement": 0.12,
     "planning_cooperation": 0.10,
 }
 RISK_DIMENSIONS = {
@@ -103,6 +105,11 @@ FORBIDDEN_OUTPUT_TERMS = {
     "may just be busy",
     "might just be busy",
     "wonderful in its own way",
+    "jealous",
+    "jealousy tactic",
+    "push-pull",
+    "dominance technique",
+    "pretend to be unavailable",
 }
 
 PHONE_RE = re.compile(r"(?<!\w)\+?\d[\d\s().-]{6,}\d(?!\w)")
@@ -141,6 +148,7 @@ COMMUNICATION_ANALYSIS_SCHEMA: dict[str, Any] = {
     "additionalProperties": False,
     "required": [
         "summary",
+        "context",
         "verdict",
         "conversation_state",
         "confidence",
@@ -156,6 +164,31 @@ COMMUNICATION_ANALYSIS_SCHEMA: dict[str, Any] = {
     ],
     "properties": {
         "summary": {"type": "string"},
+        "context": {
+            "type": "object",
+            "additionalProperties": False,
+            "required": ["category", "confidence", "evidence_types", "source", "explanation"],
+            "properties": {
+                "category": {
+                    "type": "string",
+                    "enum": [
+                        "romantic",
+                        "friendship",
+                        "family",
+                        "work",
+                        "customer_or_service",
+                        "group_social",
+                        "channel_or_broadcast",
+                        "mixed",
+                        "unknown",
+                    ],
+                },
+                "confidence": {"type": "string", "enum": ["low", "medium", "high"]},
+                "evidence_types": {"type": "array", "maxItems": 8, "items": {"type": "string"}},
+                "source": {"type": "string", "enum": ["automatic", "user_confirmed", "saved", "ai_interpreted"]},
+                "explanation": {"type": "string"},
+            },
+        },
         "verdict": {
             "type": "object",
             "additionalProperties": False,
@@ -281,6 +314,8 @@ async def run_ai_communication_analysis(
     messages: Sequence[Message],
     events: Sequence[ConversationEvent],
     period_label: str,
+    language: str = "en",
+    context_classification: dict[str, Any] | None = None,
     client_factory: Callable[[Settings], Any] | None = None,
 ) -> AIAnalysisOutcome:
     if not settings.ai_enabled:
@@ -289,7 +324,15 @@ async def run_ai_communication_analysis(
         raise AIAnalysisError("missing_api_key")
     if not settings.ai_model:
         raise AIAnalysisError("missing_model")
-    bundle = build_ai_input_bundle(settings, chat=chat, messages=messages, events=events, period_label=period_label)
+    bundle = build_ai_input_bundle(
+        settings,
+        chat=chat,
+        messages=messages,
+        events=events,
+        period_label=period_label,
+        language=language,
+        context_classification=context_classification,
+    )
     if not bundle.payload["messages"]:
         raise AIAnalysisError("no_messages")
     client = client_factory(settings) if client_factory else default_openai_client(settings)
@@ -307,6 +350,7 @@ async def run_ai_communication_analysis(
         dimensions=bundle.payload.get("local_dimensions"),
         message_count=bundle.coverage.get("available_messages", 0),
         coverage=bundle.coverage,
+        context_classification=bundle.payload.get("context_classification"),
     )
     return AIAnalysisOutcome(
         result=result,
@@ -351,7 +395,7 @@ def system_prompt() -> str:
 
 COMMUNICATION_ANALYSIS_SYSTEM_PROMPT = (
     "You create evidence-based communication analysis from anonymized Telegram message data. "
-    "Be direct and honest. Do not manufacture positive framing, silver linings, or comfort without evidence. "
+    "Be direct, honest, careful, context-aware, and evidence-based. Do not manufacture positive framing, silver linings, or comfort without evidence. "
     "Analyze visible communication only. Separate facts, interpretation, and uncertainty. "
     "Do not diagnose personality, mental health, attachment style, or hidden feelings. "
     "Do not claim attraction, love, hatred, deliberate testing, manipulation, or loss of interest as fact. "
@@ -362,12 +406,21 @@ COMMUNICATION_ANALYSIS_SYSTEM_PROMPT = (
     "repeated avoidance of a direct question, conversation was worse than usual, visible engagement was low, "
     "or one side carried the dialogue when evidence supports it. "
     "Never use insults, identity labels, diagnoses, or certainty about hidden feelings. "
+    "Never classify context from gender, names, or stereotypes. A man and woman may be coworkers, relatives, friends, customers, or classmates. "
+    "Use the supplied context classification and confidence. If it is low confidence, say so. "
+    "For romantic context, discuss observable reciprocity, emotional engagement, meeting/planning cooperation, directness, consistency, pressure, avoidance, and effort imbalance. "
+    "Never recommend jealousy tactics, intentional ignoring, making someone chase, emotional punishment, push-pull games, pretending to be unavailable, or dominance techniques. "
+    "For work context, use clarity, responsiveness, task ownership, concrete commitments, unanswered work questions, professional tone, efficiency, planning, escalation, ambiguity, and blocking behavior. Do not use romantic-interest language. "
+    "For friendship, family, customer/service, group, and channel contexts, use the matching framework from the payload and avoid two-person relationship scoring for groups or channels. "
+    "Use professional communication principles such as reciprocity, validation, active listening, directness, boundary respect, repair, emotional acknowledgement, collaborative planning, clarity, pressure, and avoidance of concrete answers. Do not claim clinical authority. "
     "Say when the conversation was weak. Say when the evidence is insufficient. "
+    "Explain what a metric means and what it does not prove. Equal message volume does not prove interest, warmth, respectfulness, relationship health, or work effectiveness. "
     "Base conclusions on supplied local metrics, event summaries, deterministic dimensions, and selected anonymized messages. "
     "Do not invent numeric evidence and do not choose the final score. "
     "Never include Telegram identities, usernames, phone numbers, IDs, or private message quotes. "
     "Never advise manipulation, jealousy tactics, pressure, deliberate silence, or making someone chase. "
-    "Structured findings must include confidence and evidence type. "
+    "Structured findings must include confidence and evidence type. Produce 2-5 direct findings when the evidence supports them; do not fill with generic statements. "
+    "Write all visible user-facing fields in the requested output language. "
     "Return only schema-valid JSON."
 )
 
@@ -379,6 +432,8 @@ def build_ai_input_bundle(
     messages: Sequence[Message],
     events: Sequence[ConversationEvent],
     period_label: str,
+    language: str = "en",
+    context_classification: dict[str, Any] | None = None,
 ) -> AIInputBundle:
     ordered = [message for message in sorted(messages, key=lambda item: (item.timestamp, item.source_message_id)) if message.text or message.message_type]
     limited_by_message = select_representative_messages(ordered, events, max_messages=settings.ai_max_messages, chat_type=chat.get("chat_type"))
@@ -413,8 +468,15 @@ def build_ai_input_bundle(
             entry["reply_to"] = id_to_ref[message.reply_to_message_id]
         rendered.append(entry)
     metrics = summarize(ordered, "conversation")
+    context_item = context_from_dict(context_classification) if context_classification else classify_context(chat=chat, messages=list(ordered))
     dimensions = build_deterministic_dimensions(ordered, events, chat_type=safe_chat_type(chat.get("chat_type")))
-    score = communication_score_from_dimensions(dimensions, message_count=len(ordered))
+    score = communication_score_from_dimensions(
+        dimensions,
+        message_count=len(ordered),
+        coverage={"sent_messages": len(rendered), "available_messages": len(ordered), "partial": len(rendered) < len(ordered)},
+        context_confidence=context_item.confidence,
+        ai_interpreted=bool(rendered),
+    )
     metric_labels = {
         metric_sender_key(message): sender_labels.get(message.sender_id or "", "PARTICIPANT")
         for message in ordered
@@ -432,7 +494,11 @@ def build_ai_input_bundle(
     payload = {
         "task": "Communication analysis",
         "analysis_version": ANALYSIS_VERSION,
+        "analysis_framework_version": ANALYSIS_FRAMEWORK_VERSION,
+        "output_language": "Russian" if language == "ru" else "English",
         "chat_type": safe_chat_type(chat.get("chat_type")),
+        "context_classification": context_item.to_dict(),
+        "context_framework": context_framework(context_item.category),
         "period": period_label,
         "scoring_formula": score_formula_description(),
         "local_summary": local_summary(anonymize_metrics(metrics, metric_labels), events),
@@ -561,6 +627,101 @@ def local_summary(metrics: dict[str, Any], events: Sequence[ConversationEvent]) 
     }
 
 
+def context_framework(category: str) -> dict[str, Any]:
+    frameworks = {
+        "romantic": {
+            "label": "romantic",
+            "dimensions": [
+                "reciprocal initiative",
+                "emotional engagement",
+                "willingness to continue topics",
+                "response to personal disclosures",
+                "meeting/planning cooperation",
+                "directness",
+                "consistency",
+                "pressure",
+                "avoidance of concrete answers",
+                "imbalance of effort",
+            ],
+            "forbidden_advice": [
+                "jealousy tactics",
+                "intentional ignoring",
+                "making someone chase",
+                "emotional punishment",
+                "push-pull games",
+                "dominance techniques",
+            ],
+        },
+        "friendship": {
+            "label": "friendship",
+            "dimensions": [
+                "reciprocal interest",
+                "emotional support",
+                "shared humour",
+                "follow-up on personal events",
+                "mutual initiation",
+                "reliability",
+                "conversational effort",
+                "one-sided support use",
+            ],
+        },
+        "family": {
+            "label": "family",
+            "dimensions": [
+                "respect",
+                "emotional acknowledgement",
+                "recurring tension",
+                "obligations",
+                "support",
+                "control or pressure signals",
+                "unresolved recurring issues",
+                "conflict repair",
+            ],
+            "limits": ["Do not diagnose family members."],
+        },
+        "work": {
+            "label": "work",
+            "dimensions": [
+                "clarity",
+                "responsiveness",
+                "task ownership",
+                "concrete commitments",
+                "unanswered work questions",
+                "professional tone",
+                "efficiency",
+                "planning",
+                "escalation",
+                "ambiguity",
+                "blocking behavior",
+            ],
+            "limits": ["Do not use romantic or emotional-interest language."],
+        },
+        "customer_or_service": {
+            "label": "customer_or_service",
+            "dimensions": [
+                "issue resolution",
+                "clarity",
+                "responsiveness",
+                "professionalism",
+                "repeated requests",
+                "unresolved commitments",
+                "escalation needs",
+            ],
+        },
+        "group_social": {
+            "label": "group_social",
+            "dimensions": ["activity", "coordination", "participation", "questions", "plans", "follow-ups"],
+            "limits": ["Do not produce a two-person relationship score."],
+        },
+        "channel_or_broadcast": {
+            "label": "channel_or_broadcast",
+            "dimensions": ["posting activity", "cadence", "quiet periods", "content coordination"],
+            "limits": ["Do not produce a two-person relationship score."],
+        },
+    }
+    return frameworks.get(category, {"label": category or "unknown", "dimensions": ["observable communication behavior"], "limits": ["Context confidence may be low."]})
+
+
 def build_deterministic_dimensions(
     messages: Sequence[Message],
     events: Sequence[ConversationEvent],
@@ -635,16 +796,16 @@ def build_deterministic_dimensions(
             unavailable_reason="This dimension needs explicit text interpretation.",
         ),
         "respectfulness": dimension_row(
-            score=7.0,
-            evidence_count=message_count,
-            explanation="Local deterministic analysis found no strong hostility signal in available rule-based events.",
-            unavailable_reason=None if message_count >= 6 else "Not enough messages to assess respectfulness.",
+            score=None,
+            evidence_count=0,
+            explanation="Local deterministic analysis does not reliably measure respectful wording without text interpretation.",
+            unavailable_reason="This dimension needs explicit text interpretation.",
         ),
         "sarcasm_intensity": dimension_row(
-            score=0.0,
+            score=None,
             evidence_count=0,
-            explanation="No harmful sarcasm signal is inferred by local metrics alone.",
-            unavailable_reason=None,
+            explanation="Local deterministic analysis does not reliably measure sarcasm intensity.",
+            unavailable_reason="This dimension needs explicit text interpretation.",
             risk=True,
         ),
         "pressure_risk": dimension_row(
@@ -655,17 +816,17 @@ def build_deterministic_dimensions(
             risk=True,
         ),
         "hostility": dimension_row(
-            score=0.0,
+            score=None,
             evidence_count=0,
-            explanation="No hostility signal is inferred by local metrics alone.",
-            unavailable_reason=None,
+            explanation="Local deterministic analysis does not reliably measure hostile wording.",
+            unavailable_reason="This dimension needs explicit text interpretation.",
             risk=True,
         ),
         "dismissiveness": dimension_row(
-            score=0.0,
+            score=None,
             evidence_count=0,
             explanation="Dismissive wording is not inferred unless text interpretation is available.",
-            unavailable_reason=None,
+            unavailable_reason="This dimension needs explicit text interpretation.",
             risk=True,
         ),
         "unanswered_question_rate": dimension_row(
@@ -696,10 +857,10 @@ def group_activity_dimensions(message_count: int, event_counts: dict[str, Any]) 
             unavailable_reason="Not enough activity for a stable estimate." if message_count < 20 else None,
         ),
         "respectfulness": dimension_row(
-            score=7.0 if message_count >= 6 else None,
-            evidence_count=message_count,
-            explanation="Local deterministic analysis found no strong hostility signal in available rule-based events.",
-            unavailable_reason="Not enough messages to assess wording patterns." if message_count < 6 else None,
+            score=None,
+            evidence_count=0,
+            explanation="Local deterministic analysis does not reliably measure respectful wording without text interpretation.",
+            unavailable_reason="This dimension needs explicit text interpretation.",
         ),
         "pressure_risk": dimension_row(
             score=min(10.0, follow_up_count * 1.2),
@@ -791,6 +952,7 @@ def validate_ai_result(
     dimensions: dict[str, Any] | None = None,
     message_count: int = 0,
     coverage: dict[str, Any] | None = None,
+    context_classification: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     try:
         data = json.loads(value) if isinstance(value, str) else dict(value)
@@ -809,7 +971,7 @@ def validate_ai_result(
         "advice",
         "limitations",
     }
-    extended = {"verdict", "direct_findings", "uncertainties", "recommended_action"}
+    extended = {"context", "verdict", "direct_findings", "uncertainties", "recommended_action"}
     missing = required - data.keys()
     if missing:
         raise AIAnalysisError("malformed_output")
@@ -831,13 +993,23 @@ def validate_ai_result(
     data["advice"] = validate_advice(data.get("advice"))
     data["summary"] = sanitize_ai_text(data.get("summary"), limit=900)
     data["limitations"] = string_list(data.get("limitations"), limit=6, text_limit=280)
+    fallback_context = context_from_dict(context_classification)
+    data["context"] = validate_context(data.get("context"), fallback=fallback_context)
     clean_dimensions = validate_dimensions(dimensions or {})
-    score = communication_score_from_dimensions(clean_dimensions, message_count=message_count)
+    safe_cov = safe_coverage(coverage or {})
+    score = communication_score_from_dimensions(
+        clean_dimensions,
+        message_count=message_count,
+        coverage=safe_cov,
+        context_confidence=data["context"].get("confidence"),
+        ai_interpreted=bool(safe_cov.get("sent_messages")),
+    )
     data["dimensions"] = clean_dimensions
     data["overall_score"] = score["score"]
     data["score_state"] = score
-    data["coverage"] = safe_coverage(coverage or {})
+    data["coverage"] = safe_cov
     data["analysis_version"] = ANALYSIS_VERSION
+    data["analysis_framework_version"] = ANALYSIS_FRAMEWORK_VERSION
     data["verdict"] = validate_verdict(data.get("verdict"), score_state=score, message_count=message_count)
     data["direct_findings"] = validate_direct_findings(
         data.get("direct_findings"),
@@ -852,6 +1024,28 @@ def validate_ai_result(
     if contains_forbidden_claims(data):
         raise AIAnalysisError("unsafe_output")
     return data
+
+
+def validate_context(value: Any, *, fallback: Any) -> dict[str, Any]:
+    fallback_item = context_from_dict(fallback.to_dict() if hasattr(fallback, "to_dict") else fallback)
+    row = value if isinstance(value, dict) else {}
+    if fallback_item.user_confirmed:
+        row = {}
+    candidate = context_from_dict(
+        {
+            "category": row.get("category") or fallback_item.category,
+            "confidence": row.get("confidence") or fallback_item.confidence,
+            "evidence_types": row.get("evidence_types") or fallback_item.evidence_types,
+            "source": row.get("source") or fallback_item.source,
+            "user_confirmed": fallback_item.user_confirmed or row.get("source") == "user_confirmed",
+            "classified_at": fallback_item.classified_at,
+        }
+    )
+    explanation = sanitize_ai_text(row.get("explanation"), limit=420)
+    return {
+        **candidate.to_dict(),
+        "explanation": explanation,
+    }
 
 
 def validate_dimensions(value: Any) -> dict[str, dict[str, Any]]:
@@ -1012,8 +1206,19 @@ def validate_verdict(value: Any, *, score_state: dict[str, Any], message_count: 
     level = str(value.get("level") or fallback["level"])
     if level not in VERDICT_LEVELS:
         raise AIAnalysisError("malformed_output")
+    score = score_state.get("score")
+    cap = score_state.get("cap")
+    if score_state.get("insufficient_data") or score is None:
+        level = "insufficient_data"
+    elif level == "strong" and (float(score) < 8.0 or (isinstance(cap, (int, float)) and float(cap) < 8.0)):
+        level = fallback["level"]
+    elif level == "good" and float(score) < 6.5:
+        level = fallback["level"]
     headline = sanitize_ai_text(value.get("headline"), limit=160) or fallback["headline"]
     explanation = sanitize_ai_text(value.get("explanation"), limit=520) or fallback["explanation"]
+    if level == fallback["level"]:
+        headline = fallback["headline"] if value.get("level") != level else headline
+        explanation = fallback["explanation"] if value.get("level") != level else explanation
     return {"level": level, "headline": headline, "explanation": explanation}
 
 
@@ -1191,7 +1396,14 @@ def derive_overall_score(dimensions: dict[str, dict[str, Any]]) -> float:
     return float(score["score"])
 
 
-def communication_score_from_dimensions(dimensions: dict[str, dict[str, Any]], *, message_count: int) -> dict[str, Any]:
+def communication_score_from_dimensions(
+    dimensions: dict[str, dict[str, Any]],
+    *,
+    message_count: int,
+    coverage: dict[str, Any] | None = None,
+    context_confidence: str | None = None,
+    ai_interpreted: bool = False,
+) -> dict[str, Any]:
     if message_count < 10:
         return {
             "score": None,
@@ -1199,6 +1411,9 @@ def communication_score_from_dimensions(dimensions: dict[str, dict[str, Any]], *
             "insufficient_data": True,
             "explanation": "Not enough messages for a stable communication score.",
             "available_positive_weight": 0.0,
+            "evidence_quality": "insufficient",
+            "cap": None,
+            "cap_reason": "too_few_messages",
         }
     positive = weighted_average(dimensions, POSITIVE_DIMENSIONS)
     positive_weight = available_weight(dimensions, POSITIVE_DIMENSIONS)
@@ -1209,17 +1424,101 @@ def communication_score_from_dimensions(dimensions: dict[str, dict[str, Any]], *
             "insufficient_data": True,
             "explanation": "Too few supported communication dimensions are available.",
             "available_positive_weight": round(positive_weight, 3),
+            "evidence_quality": "insufficient",
+            "cap": None,
+            "cap_reason": "too_few_supported_dimensions",
         }
     risk = weighted_average(dimensions, RISK_DIMENSIONS) or 0.0
-    score = round(clamp_score(positive - risk * 0.45), 1)
+    raw_score = clamp_score(positive - risk * 0.45)
+    quality = score_evidence_quality(
+        dimensions,
+        message_count=message_count,
+        coverage=coverage or {},
+        context_confidence=context_confidence,
+        ai_interpreted=ai_interpreted,
+    )
+    score = round(min(raw_score, float(quality["cap"])), 1)
     evidence_count = sum(int(row.get("evidence_count") or 0) for row in dimensions.values() if isinstance(row, dict))
+    confidence = evidence_confidence(min(message_count, evidence_count))
+    if quality["confidence_cap"] == "low":
+        confidence = "low"
+    elif quality["confidence_cap"] == "medium" and confidence == "high":
+        confidence = "medium"
     return {
         "score": score,
-        "confidence": evidence_confidence(min(message_count, evidence_count)),
+        "confidence": confidence,
         "insufficient_data": False,
         "explanation": score_formula_description(),
         "available_positive_weight": round(positive_weight, 3),
         "risk_penalty": round(risk * 0.45, 2),
+        "raw_score": round(raw_score, 1),
+        "evidence_quality": quality["quality"],
+        "available_dimension_count": quality["available_dimension_count"],
+        "independent_dimension_count": quality["independent_dimension_count"],
+        "cap": quality["cap"],
+        "cap_reason": quality["cap_reason"],
+    }
+
+
+def score_evidence_quality(
+    dimensions: dict[str, dict[str, Any]],
+    *,
+    message_count: int,
+    coverage: dict[str, Any],
+    context_confidence: str | None,
+    ai_interpreted: bool,
+) -> dict[str, Any]:
+    available = {
+        key
+        for key, row in dimensions.items()
+        if isinstance(row, dict) and row.get("score") is not None and row.get("available") is not False
+    }
+    positive_available = available & set(POSITIVE_DIMENSIONS)
+    text_sensitive = {"respectfulness", "emotional_acknowledgement", "hostility", "dismissiveness", "sarcasm_intensity"}
+    has_text_interpretation = ai_interpreted or bool(available & text_sensitive)
+    independent = positive_available - {"reciprocity"}
+    cap = 10.0
+    reason = "full_evidence"
+    confidence_cap = "high"
+    quality = "high"
+
+    if not has_text_interpretation:
+        if len(independent) <= 3:
+            cap = 6.5
+            reason = "shallow_local_metrics"
+            confidence_cap = "medium"
+            quality = "shallow"
+        else:
+            cap = 7.2
+            reason = "deterministic_without_text_interpretation"
+            confidence_cap = "medium"
+            quality = "deterministic"
+
+    if ai_interpreted and coverage.get("partial") and cap > 8.5:
+        cap = 8.5
+        reason = "sampled_ai_text_coverage"
+        confidence_cap = "medium"
+        quality = "sampled_ai"
+
+    if context_confidence == "low" and cap > 8.0:
+        cap = 8.0
+        reason = "low_context_confidence"
+        confidence_cap = "medium"
+        quality = "medium"
+
+    if len(independent) < 4 and cap > 7.0:
+        cap = 7.0
+        reason = "limited_independent_dimensions"
+        confidence_cap = "medium"
+        quality = "medium"
+
+    return {
+        "quality": quality,
+        "cap": cap,
+        "cap_reason": reason,
+        "confidence_cap": confidence_cap,
+        "available_dimension_count": len(available),
+        "independent_dimension_count": len(independent),
     }
 
 
@@ -1254,6 +1553,8 @@ def clamp_score(value: float) -> float:
 def score_formula_description() -> str:
     return (
         "Overall score = weighted positive communication dimensions minus 45% of weighted risk dimensions, clamped to 0-10. "
+        "Message-volume balance is capped at 15% of the positive score. Missing dimensions do not count as positive evidence. "
+        "Evidence-quality caps limit shallow local metrics, deterministic metrics without text interpretation, sampled AI coverage, and low context confidence. "
         "It describes visible communication quality only, not feelings, compatibility, truthfulness, or mental health."
     )
 
@@ -1264,52 +1565,65 @@ def local_fallback_analysis(
     events: Sequence[ConversationEvent],
     period_label: str,
     chat_type: str = "one_to_one",
+    language: str = "en",
+    context_classification: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     metrics = summarize(messages, "chat")
     event_counts = summarize_events(events)
     message_count = int(metrics.get("message_count") or 0)
     unanswered = len(metrics.get("unanswered_questions") or [])
+    context_item = context_from_dict(context_classification) if context_classification else classify_context(chat={"chat_type": chat_type}, messages=list(messages))
     dimensions = build_deterministic_dimensions(messages, events, chat_type=chat_type)
     confidence = "low" if message_count < 30 else "medium"
     follow_up_count = int(event_counts.get("follow_up_candidate", 0) or 0)
     plan_count = int(event_counts.get("plan_candidate", 0) or 0)
-    positive_patterns = local_positive_patterns(message_count, metrics, chat_type)
-    problem_patterns = local_problem_patterns(unanswered, follow_up_count, chat_type)
-    local_score = communication_score_from_dimensions(dimensions, message_count=message_count)
-    verdict = local_verdict(messages, metrics, dimensions, local_score, chat_type=chat_type)
-    direct_findings = local_direct_findings(messages, metrics, dimensions, unanswered, follow_up_count, chat_type=chat_type)
+    positive_patterns = local_positive_patterns(message_count, metrics, chat_type, context_item.category, language=language)
+    problem_patterns = local_problem_patterns(unanswered, follow_up_count, chat_type, context_item.category, language=language)
+    local_score = communication_score_from_dimensions(
+        dimensions,
+        message_count=message_count,
+        coverage={"sent_messages": 0, "available_messages": message_count, "partial": False},
+        context_confidence=context_item.confidence,
+        ai_interpreted=False,
+    )
+    verdict = local_verdict(messages, metrics, dimensions, local_score, chat_type=chat_type, language=language)
+    direct_findings = local_direct_findings(messages, metrics, dimensions, unanswered, follow_up_count, chat_type=chat_type, context_category=context_item.category, language=language)
     result = {
-        "summary": local_summary_sentence(chat_type, message_count, unanswered, direct_findings),
+        "context": {
+            **context_item.to_dict(),
+            "explanation": t(language, "local_context_explanation"),
+        },
+        "summary": local_summary_sentence(chat_type, message_count, unanswered, direct_findings, context_item.category, language=language),
         "verdict": verdict,
         "conversation_state": "needs_follow_up" if unanswered or follow_up_count else ("casual" if message_count >= 10 else "insufficient_data"),
         "confidence": confidence,
         "direct_findings": direct_findings,
         "participant_analysis": {
             "you": {
-                "summary": local_participant_summary(messages, outgoing=True),
-                "observable_patterns": local_participant_patterns(messages, outgoing=True),
-                "strengths": local_participant_strengths(messages, outgoing=True),
-                "possible_improvements": ["Ask one clear question at a time when you need a direct answer."] if unanswered else [],
+                "summary": local_participant_summary(messages, outgoing=True, language=language),
+                "observable_patterns": local_participant_patterns(messages, outgoing=True, context_category=context_item.category, language=language),
+                "strengths": local_participant_strengths(messages, outgoing=True, language=language),
+                "possible_improvements": [t(language, "local_improvement_one_question")] if unanswered else [],
             },
             "other": {
-                "summary": local_participant_summary(messages, outgoing=False),
-                "observable_patterns": local_participant_patterns(messages, outgoing=False),
-                "strengths": local_participant_strengths(messages, outgoing=False),
-                "possible_improvements": ["Answer direct questions clearly when a response is visible in the conversation."] if unanswered else [],
+                "summary": local_participant_summary(messages, outgoing=False, language=language),
+                "observable_patterns": local_participant_patterns(messages, outgoing=False, context_category=context_item.category, language=language),
+                "strengths": local_participant_strengths(messages, outgoing=False, language=language),
+                "possible_improvements": [t(language, "local_improvement_answer_questions")] if unanswered else [],
             },
         },
         "positive_patterns": positive_patterns,
         "problem_patterns": problem_patterns,
-        "weak_reply_patterns": local_weak_reply_patterns(unanswered),
+        "weak_reply_patterns": local_weak_reply_patterns(unanswered, language=language),
         "uncertainties": [
-            "The reason cannot be determined from messages alone.",
-            "No AI text interpretation was used.",
+            t(language, "local_uncertainty_reason"),
+            t(language, "local_uncertainty_no_ai"),
         ],
-        "recommended_action": local_recommended_action(unanswered=unanswered, follow_up_count=follow_up_count, score_state=local_score),
-        "advice": local_advice(unanswered=unanswered, follow_up_count=follow_up_count, plan_count=plan_count),
+        "recommended_action": local_recommended_action(unanswered=unanswered, follow_up_count=follow_up_count, score_state=local_score, context_category=context_item.category, language=language),
+        "advice": local_advice(unanswered=unanswered, follow_up_count=follow_up_count, plan_count=plan_count, context_category=context_item.category, language=language),
         "limitations": [
-            f"Used local deterministic metrics for {period_label}.",
-            "No AI text interpretation was used.",
+            t(language, "local_limitation_structure"),
+            t(language, "local_limitation_period", period=period_label),
         ],
     }
     coverage = {
@@ -1320,41 +1634,54 @@ def local_fallback_analysis(
         "partial": False,
         "local_metrics_cover_full_period": True,
     }
-    return validate_ai_result(result, dimensions=dimensions, message_count=message_count, coverage=coverage)
+    return validate_ai_result(result, dimensions=dimensions, message_count=message_count, coverage=coverage, context_classification=context_item.to_dict())
 
 
-def local_summary_sentence(chat_type: str, message_count: int, unanswered: int, findings: Sequence[dict[str, str]] | None = None) -> str:
+def local_summary_sentence(
+    chat_type: str,
+    message_count: int,
+    unanswered: int,
+    findings: Sequence[dict[str, str]] | None = None,
+    context_category: str = "unknown",
+    *,
+    language: str = "en",
+) -> str:
     if message_count <= 0:
-        return "There is not enough visible activity to support a communication conclusion."
+        return t(language, "local_summary_no_activity")
     if chat_type == "group":
-        return "Group activity was summarized from local message counts, questions, plans, and follow-up candidates."
+        return t(language, "local_summary_group")
     if chat_type == "channel":
-        return "Channel activity was summarized from local posting cadence and quiet periods."
+        return t(language, "local_summary_channel")
     high_findings = [item for item in findings or [] if item.get("severity") in {"medium", "high"}]
     if high_findings:
         return high_findings[0]["finding"]
     if unanswered:
-        return f"{unanswered} direct question candidate(s) received no visible response inside the local response window."
-    return "The conversation has visible activity without a strong local warning in this period."
+        return t(language, "local_summary_unanswered", count=unanswered)
+    if context_category == "work":
+        return t(language, "local_summary_work_neutral")
+    if context_category == "romantic":
+        return t(language, "local_summary_romantic_neutral")
+    return t(language, "local_summary_private_neutral")
 
 
-def local_positive_patterns(message_count: int, metrics: dict[str, Any], chat_type: str) -> list[dict[str, str]]:
+def local_positive_patterns(message_count: int, metrics: dict[str, Any], chat_type: str, context_category: str, *, language: str) -> list[dict[str, str]]:
     if message_count <= 0:
         return []
     if chat_type in {"group", "channel"}:
-        return [{"title": "Visible activity", "explanation": "The selected period contains enough local activity to summarize basic patterns.", "evidence_type": "metric"}]
+        return [{"title": t(language, "local_pattern_visible_activity"), "explanation": t(language, "local_pattern_visible_activity_explanation"), "evidence_type": "metric"}]
     senders = metrics.get("message_count_by_sender") or {}
-    title = "Both sides participated" if len([value for value in senders.values() if value]) >= 2 else "Visible conversation activity"
-    return [{"title": title, "explanation": "Local metrics found message activity in the selected period.", "evidence_type": "metric"}]
+    title_key = "local_pattern_both_sides" if len([value for value in senders.values() if value]) >= 2 else "local_pattern_visible_conversation"
+    explanation_key = "local_pattern_work_activity_explanation" if context_category == "work" else "local_pattern_activity_explanation"
+    return [{"title": t(language, title_key), "explanation": t(language, explanation_key), "evidence_type": "metric"}]
 
 
-def local_problem_patterns(unanswered: int, follow_up_count: int, chat_type: str) -> list[dict[str, str]]:
+def local_problem_patterns(unanswered: int, follow_up_count: int, chat_type: str, context_category: str, *, language: str) -> list[dict[str, str]]:
     rows: list[dict[str, str]] = []
     if unanswered:
         rows.append(
             {
-                "title": "Unanswered questions",
-                "explanation": f"{unanswered} direct question candidate(s) received no visible response inside the local response window.",
+                "title": t(language, "local_problem_unanswered_title"),
+                "explanation": t(language, "local_problem_unanswered_explanation", count=unanswered),
                 "severity": "medium" if unanswered >= 3 else "low",
                 "evidence_type": "event",
             }
@@ -1362,8 +1689,8 @@ def local_problem_patterns(unanswered: int, follow_up_count: int, chat_type: str
     if follow_up_count:
         rows.append(
             {
-                "title": "Open follow-ups",
-                "explanation": f"{follow_up_count} follow-up candidate(s) remained visible in this period.",
+                "title": t(language, "local_problem_followups_title"),
+                "explanation": t(language, "local_problem_followups_explanation", count=follow_up_count),
                 "severity": "medium" if follow_up_count >= 3 else "low",
                 "evidence_type": "event",
             }
@@ -1373,46 +1700,55 @@ def local_problem_patterns(unanswered: int, follow_up_count: int, chat_type: str
     return rows
 
 
-def local_weak_reply_patterns(unanswered: int) -> list[dict[str, str]]:
+def local_weak_reply_patterns(unanswered: int, *, language: str) -> list[dict[str, str]]:
     if not unanswered:
         return []
     return [
         {
             "category": "ignored_question",
-            "explanation": "At least one direct question candidate did not receive a visible response inside the local response window.",
+            "explanation": t(language, "local_weak_ignored_question"),
             "severity": "medium" if unanswered >= 3 else "low",
             "anonymous_message_reference": "local-question-candidate",
         }
     ]
 
 
-def local_advice(*, unanswered: int, follow_up_count: int, plan_count: int) -> list[dict[str, Any]]:
+def local_advice(*, unanswered: int, follow_up_count: int, plan_count: int, context_category: str, language: str) -> list[dict[str, Any]]:
     rows = []
     if unanswered:
         rows.append(
             {
                 "priority": 1,
-                "title": "Ask one clear question",
-                "explanation": "A single specific question is easier to answer and easier to follow up on.",
-                "example": "Could you confirm the plan for Friday?",
+                "title": t(language, "local_advice_question_title"),
+                "explanation": t(language, "local_advice_question_explanation"),
+                "example": t(language, "local_advice_question_example"),
             }
         )
     if follow_up_count or plan_count:
         rows.append(
             {
                 "priority": len(rows) + 1,
-                "title": "Clarify the next step",
-                "explanation": "When plans or promises are open, a direct check-in is clearer than repeated reminders.",
-                "example": "Is this still convenient for tomorrow?",
+                "title": t(language, "local_advice_next_step_title"),
+                "explanation": t(language, "local_advice_next_step_explanation"),
+                "example": t(language, "local_advice_next_step_example"),
             }
         )
     if not rows:
+        if context_category == "work":
+            return [
+                {
+                    "priority": 1,
+                    "title": t(language, "local_advice_work_title"),
+                    "explanation": t(language, "local_advice_work_explanation"),
+                    "example": t(language, "local_advice_work_example"),
+                }
+            ]
         rows.append(
             {
                 "priority": 1,
-                "title": "Keep the next message simple",
-                "explanation": "Continue with one clear topic and check whether reciprocal initiative appears.",
-                "example": "How does Thursday evening work for you?",
+                "title": t(language, "local_advice_simple_title"),
+                "explanation": t(language, "local_advice_simple_explanation"),
+                "example": t(language, "local_advice_simple_example"),
             }
         )
     return rows[:3]
@@ -1425,21 +1761,33 @@ def local_verdict(
     score_state: dict[str, Any],
     *,
     chat_type: str,
+    language: str = "en",
 ) -> dict[str, str]:
     verdict = derive_verdict(score_state, message_count=len(messages))
     if len(messages) < 10:
-        return verdict
+        return localize_verdict(verdict, language=language)
     if chat_type != "one_to_one":
-        return verdict
+        return localize_verdict(verdict, language=language)
     unanswered = len(metrics.get("unanswered_questions") or [])
     imbalance = one_sided_message_share(messages)
     if unanswered >= 3 or imbalance >= 0.75:
         return {
             "level": "weak",
-            "headline": "The conversation was uneven.",
-            "explanation": "Local metrics show one side carried more visible activity or several direct questions received no visible response.",
+            "headline": t(language, "local_verdict_uneven_headline"),
+            "explanation": t(language, "local_verdict_uneven_explanation"),
         }
-    return verdict
+    return localize_verdict(verdict, language=language)
+
+
+def localize_verdict(verdict: dict[str, str], *, language: str) -> dict[str, str]:
+    if language == "en":
+        return verdict
+    level = verdict.get("level") or "insufficient_data"
+    return {
+        "level": level,
+        "headline": t(language, f"local_verdict_{level}_headline"),
+        "explanation": t(language, f"local_verdict_{level}_explanation"),
+    }
 
 
 def local_direct_findings(
@@ -1450,12 +1798,14 @@ def local_direct_findings(
     follow_up_count: int,
     *,
     chat_type: str,
+    context_category: str = "unknown",
+    language: str = "en",
 ) -> list[dict[str, str]]:
     findings: list[dict[str, str]] = []
     if len(messages) < 10:
         findings.append(
             {
-                "finding": "The visible data is too limited for a stable conclusion.",
+                "finding": t(language, "local_finding_insufficient"),
                 "severity": "low",
                 "confidence": "high",
                 "evidence_type": "metric",
@@ -1467,10 +1817,10 @@ def local_direct_findings(
         incoming = len(messages) - outgoing
         total = max(1, len(messages))
         if max(outgoing, incoming) / total >= 0.7:
-            carried = "you" if outgoing > incoming else "the other participant"
+            carried_key = "local_side_you" if outgoing > incoming else "local_side_other"
             findings.append(
                 {
-                    "finding": f"The dialogue was unbalanced. {carried.capitalize()} carried most visible message volume.",
+                    "finding": t(language, "local_finding_volume_unbalanced", side=t(language, carried_key)),
                     "severity": "medium",
                     "confidence": "medium",
                     "evidence_type": "metric",
@@ -1482,19 +1832,28 @@ def local_direct_findings(
         if session_count >= 3:
             other_starts = max(0, session_count - outgoing_starts)
             if outgoing_starts == 0 or other_starts == 0:
-                side = "You" if outgoing_starts == 0 else "The other participant"
+                side_key = "local_side_you" if outgoing_starts == 0 else "local_side_other"
                 findings.append(
                     {
-                        "finding": f"{side} did not restart the conversation during this period.",
+                        "finding": t(language, "local_finding_no_restart", side=t(language, side_key)),
                         "severity": "medium",
                         "confidence": "medium",
                         "evidence_type": "metric",
                     }
                 )
+        elif 0.45 <= outgoing / total <= 0.55 and total >= 20:
+            findings.append(
+                {
+                    "finding": t(language, "local_finding_equal_volume_not_quality"),
+                    "severity": "low",
+                    "confidence": "high",
+                    "evidence_type": "metric",
+                }
+            )
     if unanswered:
         findings.append(
             {
-                "finding": f"{unanswered} direct question candidate(s) received no visible response.",
+                "finding": t(language, "local_finding_unanswered", count=unanswered),
                 "severity": "high" if unanswered >= 5 else "medium",
                 "confidence": "medium",
                 "evidence_type": "event",
@@ -1503,7 +1862,7 @@ def local_direct_findings(
     if follow_up_count:
         findings.append(
             {
-                "finding": f"{follow_up_count} follow-up candidate(s) remained visible in the selected period.",
+                "finding": t(language, "local_finding_followups", count=follow_up_count),
                 "severity": "medium" if follow_up_count >= 3 else "low",
                 "confidence": "medium",
                 "evidence_type": "event",
@@ -1513,46 +1872,65 @@ def local_direct_findings(
     if isinstance(score.get("score"), (int, float)) and float(score["score"]) < 5.0:
         findings.append(
             {
-                "finding": "The visible data does not support a positive communication conclusion for this period.",
+                "finding": t(language, "local_finding_no_positive_conclusion"),
                 "severity": "high" if float(score["score"]) < 3.5 else "medium",
                 "confidence": score.get("confidence", "low"),
+                "evidence_type": "metric",
+            }
+        )
+    if chat_type == "one_to_one" and not findings and context_category == "work":
+        findings.append(
+            {
+                "finding": t(language, "local_finding_work_limited"),
+                "severity": "low",
+                "confidence": "medium",
                 "evidence_type": "metric",
             }
         )
     return findings[:8]
 
 
-def local_recommended_action(*, unanswered: int, follow_up_count: int, score_state: dict[str, Any]) -> dict[str, str]:
+def local_recommended_action(*, unanswered: int, follow_up_count: int, score_state: dict[str, Any], context_category: str, language: str) -> dict[str, str]:
     score = score_state.get("score")
     if score_state.get("insufficient_data") or score is None:
         return {
             "action": "no_action",
-            "explanation": "There is not enough visible data for a specific recommendation.",
+            "explanation": t(language, "local_recommendation_insufficient"),
         }
     if unanswered >= 3 or follow_up_count >= 3:
+        if context_category == "work":
+            return {
+                "action": "clarify",
+                "explanation": t(language, "local_recommendation_work_clarify"),
+            }
         return {
             "action": "stop_repeating_topic",
-            "explanation": "Do not send several new messages about the same unresolved point. Ask one direct question or wait for reciprocal initiative.",
+            "explanation": t(language, "local_recommendation_stop_repeating"),
         }
     if float(score) < 5.0:
         return {
             "action": "reduce_pressure",
-            "explanation": "Visible engagement was low or uneven, so adding pressure is unlikely to improve clarity.",
+            "explanation": t(language, "local_recommendation_reduce_pressure"),
+        }
+    if context_category == "work":
+        return {
+            "action": "clarify",
+            "explanation": t(language, "local_recommendation_work_next"),
         }
     return {
         "action": "continue",
-        "explanation": "Continue with clear, direct messages and watch whether the other participant also develops topics.",
+        "explanation": t(language, "local_recommendation_continue"),
     }
 
 
-def local_participant_strengths(messages: Sequence[Message], *, outgoing: bool) -> list[str]:
+def local_participant_strengths(messages: Sequence[Message], *, outgoing: bool, language: str = "en") -> list[str]:
     count = sum(1 for message in messages if message.is_outgoing is outgoing)
     if count <= 0:
         return []
     total = max(1, len(messages))
     share = count / total
     if 0.4 <= share <= 0.6:
-        return ["Participates at a comparable visible message volume."]
+        return [t(language, "local_strength_comparable_volume")]
     return []
 
 
@@ -1564,26 +1942,28 @@ def one_sided_message_share(messages: Sequence[Message]) -> float:
     return max(outgoing, incoming) / len(messages)
 
 
-def local_participant_summary(messages: Sequence[Message], *, outgoing: bool) -> str:
+def local_participant_summary(messages: Sequence[Message], *, outgoing: bool, language: str = "en") -> str:
     count = sum(1 for message in messages if message.is_outgoing is outgoing)
     if not messages:
-        return "Not enough visible messages to summarize."
+        return t(language, "local_participant_summary_insufficient")
     if count <= 0:
-        return "No visible messages from this side in the selected period."
-    return f"{count} visible message(s) in the selected period."
+        return t(language, "local_participant_summary_none")
+    return t(language, "local_participant_summary_count", count=count)
 
 
-def local_participant_patterns(messages: Sequence[Message], *, outgoing: bool) -> list[str]:
+def local_participant_patterns(messages: Sequence[Message], *, outgoing: bool, context_category: str = "unknown", language: str = "en") -> list[str]:
     count = sum(1 for message in messages if message.is_outgoing is outgoing)
     if count <= 0:
-        return ["No visible messages from this side in the selected period."]
+        return [t(language, "local_participant_pattern_none")]
     total = max(1, len(messages))
     share = count / total
     if share >= 0.65:
-        return ["Carries most visible message volume in this period."]
+        return [t(language, "local_participant_pattern_carries_volume")]
     if share <= 0.35:
-        return ["Participates with fewer visible messages in this period."]
-    return ["Participates at a similar visible message volume."]
+        return [t(language, "local_participant_pattern_fewer_messages")]
+    if context_category == "work":
+        return [t(language, "local_participant_pattern_work_equal_volume")]
+    return [t(language, "local_participant_pattern_similar_volume")]
 
 
 def response_usage(response: Any) -> dict[str, Any]:

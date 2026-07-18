@@ -11,6 +11,7 @@ from typing import Any
 from relchat.bot.formatters import format_job_failure, format_job_progress, format_unified_analysis_result
 from relchat.bot.keyboards import analysis_result_keyboard, job_progress_keyboard
 from relchat.bot.services.ai_analysis import AIAnalysisError, CONSENT_VERSION, local_fallback_analysis, run_ai_communication_analysis
+from relchat.bot.services.context import ANALYSIS_FRAMEWORK_VERSION, classify_context
 from relchat.bot.services.period_comparison import compare_report_to_previous
 from relchat.bot.services.ux_audit import record_ux_event
 from relchat.bot.services.report_service import build_report
@@ -20,11 +21,13 @@ from relchat.core.models import Message
 from relchat.database.repositories import (
     create_ai_analysis,
     create_period_comparison,
+    get_chat_context_classification,
     get_analysis_job,
     get_user_settings,
     list_reports,
     save_conversation,
     save_user_message,
+    set_analysis_context_used,
     update_analysis_job,
 )
 from relchat.database.sqlite import connect, init_db
@@ -166,6 +169,29 @@ async def run_analysis_job(application: Any, settings: Settings, job_id: str) ->
 
         events = extract_events(imported)
         with connect(settings.db_path) as conn:
+            saved_context = get_chat_context_classification(conn, job["bot_user_id"], job.get("source") or "telegram", job["chat_id"])
+        context_classification = classify_context(
+            chat={
+                "source": job.get("source"),
+                "chat_id": job.get("chat_id"),
+                "chat_type": conversation.conversation_type,
+                "title": job.get("chat_title") or conversation.title,
+            },
+            messages=imported,
+            saved=saved_context,
+        ).to_dict()
+        record_ux_event(
+            settings,
+            "context_confirmed_or_classified",
+            payload={
+                "job_id": job.get("job_id"),
+                "category": context_classification.get("category"),
+                "confidence": context_classification.get("confidence"),
+                "source": context_classification.get("source"),
+                "user_confirmed": bool(context_classification.get("user_confirmed")),
+            },
+        )
+        with connect(settings.db_path) as conn:
             job = get_analysis_job(conn, job_id)
             if job is None:
                 return
@@ -201,6 +227,8 @@ async def run_analysis_job(application: Any, settings: Settings, job_id: str) ->
                 messages=imported,
                 events=events,
                 chat_type=conversation.conversation_type,
+                language=language,
+                context_classification=context_classification,
                 started=started,
             )
         else:
@@ -211,8 +239,20 @@ async def run_analysis_job(application: Any, settings: Settings, job_id: str) ->
                 messages=imported,
                 events=events,
                 chat_type=conversation.conversation_type,
+                language=language,
+                context_classification=context_classification,
                 started=started,
             )
+        with connect(settings.db_path) as conn:
+            set_analysis_context_used(
+                conn,
+                job["bot_user_id"],
+                job.get("source") or "telegram",
+                job["chat_id"],
+                category=str(context_classification.get("category") or "unknown"),
+                framework_version=ANALYSIS_FRAMEWORK_VERSION,
+            )
+            conn.commit()
         comparison = persist_report_comparison(settings, job=job, report=report, ai_analysis=ai_analysis)
         if ai_analysis is not None and comparison is not None:
             ai_analysis = {**ai_analysis, "comparison": comparison.get("result") or comparison}
@@ -296,6 +336,8 @@ async def run_optional_ai_analysis(
     messages: list[Message],
     events: Sequence[Any],
     chat_type: str | None,
+    language: str,
+    context_classification: dict[str, Any],
     started: float,
 ) -> tuple[dict[str, Any] | None, bool]:
     record_ux_event(
@@ -319,6 +361,8 @@ async def run_optional_ai_analysis(
             messages=messages,
             events=events,
             period_label=job.get("period_label") or "",
+            language=language,
+            context_classification=context_classification,
         )
         with connect(settings.db_path) as conn:
             analysis = create_ai_analysis(
@@ -398,6 +442,8 @@ async def run_optional_ai_analysis(
             messages=messages,
             events=events,
             chat_type=chat_type,
+            language=language,
+            context_classification=context_classification,
             started=started,
         )
         return local_analysis or analysis, True
@@ -411,6 +457,8 @@ def create_local_communication_analysis(
     messages: Sequence[Message],
     events: Sequence[Any],
     chat_type: str | None,
+    language: str,
+    context_classification: dict[str, Any],
     started: float,
 ) -> dict[str, Any] | None:
     record_ux_event(
@@ -427,6 +475,8 @@ def create_local_communication_analysis(
         events=events,
         period_label=job.get("period_label") or "",
         chat_type=chat_type or "one_to_one",
+        language=language,
+        context_classification=context_classification,
     )
     with connect(settings.db_path) as conn:
         analysis = create_ai_analysis(

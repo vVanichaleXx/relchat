@@ -10,6 +10,12 @@ Local analysis stays on this machine. Optional AI-enhanced analysis runs only wh
 
 The analysis tone is factual and direct. RelChat may describe weak conversation, unbalanced dialogue, low-effort replies, dismissive answers, or worse-than-usual performance when supported by observable evidence. It must not invent comforting explanations, diagnose people, claim hidden feelings, or insult participants.
 
+RelChat classifies the communication context before analysis. Supported contexts are romantic, friendship, family, work, customer/service, group, channel/broadcast, mixed, and unknown. The classifier must not use gender, names, or stereotypes. Users can correct the context; confirmed context is stored per `bot_user_id`, source, and chat, and overrides automatic classification until changed.
+
+Local-only analysis can see structure such as participation, session starts, response opportunities, questions, plans, and follow-up candidates. It does not understand the meaning of every reply and must not turn missing tone dimensions into positive evidence. Unmeasured sarcasm, hostility, dismissiveness, or emotional warmth remain unavailable unless text interpretation supports them.
+
+Scores are evidence-gated. Equal message volume does not prove interest, warmth, respectfulness, relationship health, or work effectiveness. Shallow local metrics, deterministic metrics without text interpretation, sampled AI coverage, and low context confidence can cap score and confidence.
+
 ## Period Comparisons
 
 Period comparison uses observable metrics only and only compares ranges from the same chat when message counts, durations, coverage, and analysis versions are comparable. If those checks fail, RelChat shows that there is not enough comparable data.

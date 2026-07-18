@@ -13,6 +13,7 @@ RelChat is designed to be local-first, source-agnostic, and user-controlled.
 - Provides a restricted Telegram Bot interface that calls the same local import, metrics, and event logic.
 - Optionally sends minimized selected-message data to OpenAI for AI-enhanced communication analysis, only after explicit bot consent and only when configured by environment variables.
 - Lets users mark chats as important and, only when explicitly enabled, monitor those chats for a cautious “appears to have paused” automation heuristic.
+- Classifies communication context before analysis and lets the user correct it per chat.
 
 ## What The MVP Does Not Do
 
@@ -29,6 +30,9 @@ RelChat is designed to be local-first, source-agnostic, and user-controlled.
 - It does not send Telegram sessions, API hashes, bot tokens, phone numbers, raw Telethon objects, media files, unrelated chats, debug logs, or full database exports to OpenAI.
 - It does not claim to know when a conversation definitely ended.
 - It does not monitor normal chats automatically. Automation is limited to important chats with user-level and chat-level switches enabled.
+- It does not infer romantic, work, family, or friendship context from gender, names, or stereotypes.
+- It does not treat equal message counts as proof of interest, respectfulness, relationship health, or work effectiveness.
+- It does not display unmeasured sarcasm, hostility, or dismissiveness as `0.0`.
 
 ## Local Storage
 
@@ -49,6 +53,8 @@ AI analysis records store metadata, score dimensions, validated structured outpu
 
 Important-chat automation stores per-user settings, message cursors, completed automatic message ranges, delayed notification metadata, cooldown state, and comparison metadata. It does not duplicate full message transcripts.
 
+Confirmed communication context is stored on the per-user chat record. It is scoped by `bot_user_id`, source, and chat, so one user cannot change another user’s category for the same Telegram chat.
+
 ## Telegram Bot Interface
 
 Bot Interface v0 is a private UI for local RelChat operations. It can show setup
@@ -63,6 +69,13 @@ or session contents.
 When a user selects AI-enhanced analysis for the first time, the bot explains
 that selected conversation messages are sent to OpenAI and offers local-only
 analysis instead. Consent can be revoked in Settings.
+
+AI-enhanced communication analysis receives the confirmed or estimated context,
+anonymous participant labels, deterministic metrics, event summaries, selected
+period, coverage limits, and a bounded representative message sample. The prompt
+requires direct, context-aware, non-manipulative language and forbids diagnoses,
+hidden-feeling certainty, gender-based classification, pickup tactics, and
+clinical authority claims.
 
 UX audit logs record safe interaction metadata such as mode selection,
 started/completed/failed state, duration, and usage counts. They must not record
@@ -92,6 +105,7 @@ Users should be able to:
 - review privacy-sensitive behavior before enabling it
 - choose local-only analysis instead of AI-enhanced analysis
 - revoke AI consent from Settings
+- correct the communication context for a chat
 - disable automation for a chat, pause it for 24 hours, or disable all automatic analysis
 
 Deleting `data/` removes the local database and Telegram session for the default configuration.

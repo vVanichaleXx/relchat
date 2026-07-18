@@ -32,6 +32,8 @@ relchat/
   bot/           Telegram Bot user interface boundary
   bot/services/ai_analysis.py
                  Optional OpenAI Responses API composition over normalized data
+  bot/services/context.py
+                 Context classification, labels, and context-aware framework selection
   bot/services/period_comparison.py
                  Comparable-period rules and metric-specific comparison logic
   bot/services/automation.py
@@ -138,6 +140,21 @@ when enabled by configuration and after persisted user consent. The OpenAI SDK
 is optional; bot startup and local deterministic analysis must work without it.
 Provider output is structured interpretation only; deterministic dimensions and
 the final 0-10 score are calculated locally before persistence/rendering.
+
+Context classification is a first-class input to communication analysis. The
+classifier supports romantic, friendship, family, work, customer/service,
+group, channel/broadcast, mixed, and unknown contexts. User-confirmed context is
+stored on `user_chats` per `bot_user_id`, source, and chat, and overrides
+automatic classification until changed. Automatic classification may use chat
+type, saved category, title/type, deterministic topic signals, and the
+anonymized sample already used by AI interpretation. It must not infer context
+from gender, names, or stereotypes.
+
+Score quality is also local. `ai_analysis.py` gates score confidence by message
+count, text-message coverage, available dimensions, AI sample coverage,
+deterministic evidence count, period coverage, and context confidence. Equal
+message volume is capped as shallow evidence; unavailable dimensions must stay
+unavailable and must not inflate a score.
 
 `bot/services/period_comparison.py` compares only comparable periods for the same
 chat. It rejects weak comparisons when message counts are too low, duration is

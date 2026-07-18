@@ -204,6 +204,7 @@ def chat_home_details_menu_keyboard(*, language: str = "en"):
                 InlineKeyboardButton(t(language, "button_followups"), callback_data="rc:home:sec:followups"),
                 InlineKeyboardButton(t(language, "button_chat_reports_short"), callback_data="rc:home:sec:reports"),
             ],
+            [InlineKeyboardButton(t(language, "button_change_context"), callback_data="rc:home:context")],
             [InlineKeyboardButton(t(language, "button_chat_settings"), callback_data="rc:home:sec:settings")],
             [InlineKeyboardButton(t(language, "button_chat_home"), callback_data="rc:home:open")],
         ]
@@ -255,6 +256,22 @@ def ai_detail_keyboard(*, language: str = "en"):
                 InlineKeyboardButton(t(language, "button_full_analysis"), callback_data="rc:home:ai:full"),
                 InlineKeyboardButton(t(language, "ai_advice_title"), callback_data="rc:home:ai:advice"),
             ],
+            [InlineKeyboardButton(t(language, "button_change_context"), callback_data="rc:home:context")],
+            [InlineKeyboardButton(t(language, "button_chat_home"), callback_data="rc:home:open")],
+        ]
+    )
+
+
+def context_correction_keyboard(*, language: str = "en"):
+    from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+
+    return InlineKeyboardMarkup(
+        [
+            [InlineKeyboardButton(t(language, "context_option_romantic"), callback_data="rc:home:context:set:romantic")],
+            [InlineKeyboardButton(t(language, "context_option_friendship"), callback_data="rc:home:context:set:friendship")],
+            [InlineKeyboardButton(t(language, "context_option_family"), callback_data="rc:home:context:set:family")],
+            [InlineKeyboardButton(t(language, "context_option_work"), callback_data="rc:home:context:set:work")],
+            [InlineKeyboardButton(t(language, "context_option_other"), callback_data="rc:home:context:set:other")],
             [InlineKeyboardButton(t(language, "button_chat_home"), callback_data="rc:home:open")],
         ]
     )
@@ -283,6 +300,7 @@ def analysis_detail_keyboard(report_id: str, *, language: str = "en"):
                 InlineKeyboardButton(t(language, "button_next_period"), callback_data=f"rc:rep:next:{report_id}"),
             ],
             [InlineKeyboardButton(t(language, "button_back_to_analysis"), callback_data=f"rc:rep:full:{report_id}")],
+            [InlineKeyboardButton(t(language, "button_change_context"), callback_data="rc:home:context")],
             [InlineKeyboardButton(t(language, "button_chat_home"), callback_data="rc:home:open")],
         ]
     )

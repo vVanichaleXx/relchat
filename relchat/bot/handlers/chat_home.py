@@ -15,6 +15,7 @@ from relchat.bot.formatters import (
     format_chat_home_details_menu,
     format_chat_home_section,
     format_chat_home_loading,
+    format_context_correction_prompt,
     format_period_prompt,
     format_report_list,
     format_report_overview,
@@ -30,6 +31,7 @@ from relchat.bot.keyboards import (
     chat_home_details_menu_keyboard,
     chat_home_reports_keyboard,
     chat_home_section_keyboard,
+    context_correction_keyboard,
     chat_settings_keyboard,
     main_keyboard,
     period_keyboard,
@@ -38,11 +40,13 @@ from relchat.bot.keyboards import (
 )
 from relchat.bot.localization import t
 from relchat.bot.services.chat_home_service import build_chat_home_view_model
+from relchat.bot.services.context import user_context_category
 from relchat.bot.services.timeline_service import (
     build_relationship_timeline,
     paginate_timeline_story,
     render_timeline_chart,
 )
+from relchat.bot.services.ux_audit import record_ux_event
 from relchat.bot.state import get_flow, JOB_RUNNING_STATES
 from relchat.database.repositories import (
     get_important_chat_settings,
@@ -53,6 +57,7 @@ from relchat.database.repositories import (
     list_reminders,
     list_reports,
     set_chat_important,
+    set_chat_context_classification,
     update_important_chat_setting,
     update_user_setting,
 )
@@ -146,6 +151,12 @@ async def handle_chat_home_callback(update: Update, context: ContextTypes.DEFAUL
         return True
     if action == "details":
         await show_chat_home_details(update, context)
+        return True
+    if action == "context":
+        if len(parts) >= 5 and parts[3] == "set":
+            await set_chat_context(update, context, parts[4])
+        else:
+            await show_context_correction(update, context)
         return True
     if action == "important" and len(parts) >= 4 and parts[3] == "toggle":
         await toggle_important_chat(update, context)
@@ -439,6 +450,67 @@ async def show_chat_home_details(update: Update, context: ContextTypes.DEFAULT_T
     )
 
 
+async def show_context_correction(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    chat = current_chat(context)
+    if chat is None:
+        await show_expired_navigation(update, context)
+        return
+    settings = get_context_settings(context)
+    with connect(settings.db_path) as conn:
+        language = get_user_settings(conn, bot_user_id(update)).get("language", "en")
+    await edit_or_reply(
+        update,
+        format_context_correction_prompt(chat, language=language),
+        reply_markup=context_correction_keyboard(language=language),
+    )
+
+
+async def set_chat_context(update: Update, context: ContextTypes.DEFAULT_TYPE, value: str) -> None:
+    chat = current_chat(context)
+    if chat is None:
+        await show_expired_navigation(update, context)
+        return
+    settings = get_context_settings(context)
+    user_id = bot_user_id(update)
+    source = chat.get("source") or "telegram"
+    category = user_context_category(value)
+    with connect(settings.db_path) as conn:
+        language = get_user_settings(conn, user_id).get("language", "en")
+        set_chat_context_classification(
+            conn,
+            user_id,
+            source,
+            chat["chat_id"],
+            category=category,
+            classification_source="user_confirmed",
+            confidence="high",
+            evidence_types=["user_confirmed"],
+        )
+        conn.commit()
+    record_ux_event(
+        settings,
+        "context_confirmed_or_changed",
+        payload={
+            "category": category,
+            "source": "user_confirmed",
+            "confidence": "high",
+        },
+    )
+    chat = {
+        **chat,
+        "confirmed_context_category": category,
+        "context_classification_source": "user_confirmed",
+        "context_classification_confidence": "high",
+        "context_classification_evidence": ["user_confirmed"],
+    }
+    context.user_data[CHAT_HOME_STATE] = chat_home_state(chat)
+    await edit_or_reply(
+        update,
+        "\n\n".join([t(language, "context_saved"), t(language, "context_rerun_hint")]),
+        reply_markup=chat_home_section_keyboard(chat, language=language),
+    )
+
+
 async def show_ai_analysis_section(update: Update, context: ContextTypes.DEFAULT_TYPE, section: str) -> None:
     chat = current_chat(context)
     if chat is None:
@@ -568,6 +640,11 @@ def chat_home_state(chat: dict[str, Any]) -> dict[str, Any]:
         "is_favorite": bool(chat.get("is_favorite")),
         "is_important": bool(chat.get("is_important")),
         "last_report_id": chat.get("last_report_id"),
+        "confirmed_context_category": chat.get("confirmed_context_category"),
+        "context_classification_source": chat.get("context_classification_source"),
+        "context_classification_confidence": chat.get("context_classification_confidence"),
+        "context_classification_evidence": chat.get("context_classification_evidence") or [],
+        "context_classification_at": chat.get("context_classification_at"),
     }
 
 

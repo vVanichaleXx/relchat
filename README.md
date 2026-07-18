@@ -48,6 +48,7 @@ Current package boundaries:
 The Bot API alone cannot read a user's private chat history. A bot can only receive messages sent to the bot, or messages from chats where the bot is present and permitted to receive updates. RelChat therefore needs user-authorized MTProto access for imports.
 
 See [docs/architecture.md](docs/architecture.md) for details.
+See [docs/scoring.md](docs/scoring.md) for context categories, evidence gates, and score caps.
 
 ## Setup
 
@@ -213,6 +214,12 @@ Local analysis stays on this machine and remains available without OpenAI. AI-en
 
 The analysis policy is intentionally direct. RelChat should say when a visible conversation is weak, uneven, dismissive, low-effort, or worse than a comparable period if the data supports that conclusion. It should not add unsupported comfort, invented excuses, hidden-feeling claims, diagnoses, or insults. Conclusions criticize observable communication behavior, not a participant’s human value.
 
+Before analysis, RelChat classifies the communication context as romantic, friendship, family, work, customer/service, group, channel/broadcast, mixed, or unknown. The classifier can use a user-confirmed category, saved chat metadata, chat type/title, deterministic topic signals, and, in AI mode, the anonymized sample already being sent for interpretation. It must not infer context from gender, names, or stereotypes. Users can correct the context from Chat Home or the analysis details; a user-confirmed category is stored per `bot_user_id` and chat and overrides automatic classification until changed.
+
+The selected context changes the language and framework. Work chats use efficiency, task ownership, clarity, commitments, and blocking language. Romantic chats use observable reciprocity, effort, directness, planning cooperation, and boundaries without attraction promises, pickup tactics, jealousy advice, or gender stereotypes. Family, friendship, customer/service, group, and channel contexts have their own observable frameworks. Groups and channels do not receive a two-person relationship score.
+
+Scores are evidence-gated. Equal message volume is only activity balance; it does not prove interest, warmth, respectfulness, relationship health, or work effectiveness. Message-volume balance can contribute no more than 15% of the positive score. Missing dimensions do not become positive evidence, and unmeasured risks such as sarcasm or hostility remain unavailable instead of becoming `0.0`. Shallow local metrics are capped, deterministic metrics without text interpretation are capped, sampled AI coverage is capped, and low context confidence caps score confidence.
+
 ## Period Comparison
 
 RelChat can compare comparable periods for the same chat: current session vs previous session, last 7 days vs previous 7 days, last 30 days vs previous 30 days, a selected report vs a previous report with similar duration, and the latest saved analysis vs an earlier compatible analysis.
@@ -258,9 +265,11 @@ What is not sent:
 - Telegram session data, API hashes, bot tokens, OpenAI API keys, raw Telethon objects
 - media files, unrelated chats, debug logs, deleted messages, or full database exports
 
-The communication score is a 0-10 description of visible communication quality during the selected period. It is calculated locally from weighted observable dimensions such as reciprocity, initiative balance, reply quality, topic continuation, respectfulness, question engagement, and planning cooperation, then reduced by risk dimensions such as pressure risk, hostility, dismissiveness, unanswered-question rate, and harmful sarcasm intensity. The AI may explain patterns, but it does not choose the final numeric score. When there is too little data, RelChat shows an insufficient-data state instead of a precise-looking score.
+The communication score is a 0-10 description of visible communication quality during the selected period. It is calculated locally from weighted observable dimensions such as reciprocity, initiative balance, reply quality, topic continuation, respectfulness, question engagement, and planning cooperation, then reduced by risk dimensions such as pressure risk, hostility, dismissiveness, unanswered-question rate, and harmful sarcasm intensity. The AI may explain patterns, but it does not choose the final numeric score. When there is too little data or the evidence is too shallow, RelChat shows an insufficient-data state or a capped score instead of a precise-looking high score.
 
 AI output is validated as structured JSON before persistence or rendering. Malformed output, refusals, timeouts, rate limits, disabled AI, missing keys, or model/API failures are handled safely and local analysis remains available. Large histories are limited by `RELCHAT_AI_MAX_MESSAGES` and `RELCHAT_AI_MAX_CHARS`; local metrics still cover the selected imported period, while AI receives only the configured representative sample. Partial coverage is displayed instead of pretending the whole chat was sent to AI.
+
+Local-only analysis clearly states its limitation: it can see conversation structure, but it does not understand the meaning of every reply. It should remain neutral unless several supported dimensions justify a stronger conclusion.
 
 ## Implemented Metrics
 

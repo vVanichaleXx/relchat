@@ -9,6 +9,7 @@ from relchat.core.models import ConversationEvent, ConversationRef, Message
 from relchat.events.extractor import summarize_events
 from relchat.bot.localization import t
 from relchat.bot.services.chat_home_service import build_chat_home_view_model
+from relchat.bot.services.context import context_label, context_score_label, low_confidence_context_note
 from relchat.bot.services.period_comparison import format_period_comparison_compact, format_period_comparison_full
 from relchat.bot.services.timeline_service import RelationshipTimeline, TimelineEntry, TimelinePage, TimelineStoryItem, TimelineStoryPage, paginate_timeline_story
 from relchat.bot.state import module_labels
@@ -350,6 +351,11 @@ def format_chat_home_details_menu(*, language: str = "en") -> str:
     return "\n\n".join([t(language, "chat_home_details_title"), t(language, "chat_home_details_body")])
 
 
+def format_context_correction_prompt(chat: dict[str, Any] | None = None, *, language: str = "en") -> str:
+    title = sanitize_label((chat or {}).get("title") or (chat or {}).get("display_title"), fallback=t(language, "chat_type_unknown"), limit=80)
+    return "\n\n".join([title, t(language, "context_change_title"), t(language, "context_change_body")])
+
+
 def format_analysis_mode_prompt(*, chat_title: str | None, language: str = "en") -> str:
     return "\n\n".join(
         [
@@ -383,56 +389,61 @@ def format_ai_result_overview(analysis: dict[str, Any], *, chat_title: str | Non
     participants = normalized_participants(result)
     positive = pattern_bullets(result.get("positive_patterns"), limit=3)
     problems = pattern_bullets(result.get("problem_patterns"), limit=3)
-    direct = direct_findings_bullets(result.get("direct_findings"), limit=3)
+    direct = direct_findings_bullets(result.get("direct_findings"), limit=3, language=language)
     verdict = result.get("verdict") if isinstance(result.get("verdict"), dict) else {}
     advice = result.get("advice") or []
     main_advice = advice[0] if advice else {}
     coverage = result.get("coverage") or analysis.get("coverage") or {}
     coverage_line = format_ai_coverage_line(coverage, language=language)
     comparison = analysis.get("comparison") or result.get("period_comparison")
-    lines = [
-        title,
-        "",
-        t(language, "ai_communication_analysis"),
-        "",
-        t(language, "ai_communication_score"),
-        f"{float(score):.1f} / 10" if isinstance(score, (int, float)) else t(language, "ai_insufficient_data"),
-        t(language, "ai_confidence_line", confidence=t(language, f"confidence_{confidence}") if confidence in {"low", "medium", "high"} else confidence),
-        "",
-        t(language, "ai_summary_title"),
-        sanitize_label(result.get("summary"), fallback=t(language, "not_available"), limit=700),
-        "",
-        t(language, "ai_verdict_title"),
-        sanitize_label(verdict.get("headline"), fallback=t(language, "not_available"), limit=180),
-        sanitize_label(verdict.get("explanation"), fallback="", limit=360),
-        "",
-        t(language, "ai_direct_findings_title"),
-        direct or t(language, "not_available"),
-        "",
-        t(language, "ai_you_title"),
-        string_bullets(participants.get("you", {}).get("observable_patterns"), limit=4) or t(language, "not_available"),
-        "",
-        t(language, "ai_other_title"),
-        string_bullets(participants.get("other", {}).get("observable_patterns"), limit=4) or t(language, "not_available"),
-        "",
-        t(language, "ai_strengths_title"),
-        positive or t(language, "not_available"),
-        "",
-        t(language, "ai_weakens_title"),
-        problems or t(language, "not_available"),
-        "",
-        t(language, "ai_main_advice"),
-        sanitize_label(main_advice.get("title"), fallback=t(language, "not_available"), limit=160),
-    ]
-    if main_advice.get("explanation"):
-        lines.append(sanitize_label(main_advice.get("explanation"), fallback="", limit=360))
+    context = result.get("context") if isinstance(result.get("context"), dict) else {}
+    context_category = context.get("category")
+    lines = [title, "", t(language, "ai_communication_analysis"), context_label(context_category, language=language), ""]
+    context_note = low_confidence_context_note(context, language=language) if context else ""
+    if context_note:
+        lines.extend([context_note, ""])
+    lines.extend(
+        [
+            context_score_label(context_category, language=language),
+            f"{float(score):.1f} / 10" if isinstance(score, (int, float)) else t(language, "ai_score_unreliable"),
+            t(language, "ai_confidence_line", confidence=t(language, f"confidence_{confidence}") if confidence in {"low", "medium", "high"} else confidence),
+            "",
+        ]
+    )
+    summary = sanitize_label(result.get("summary"), fallback="", limit=700)
+    if summary:
+        lines.extend([t(language, "ai_summary_title"), summary, ""])
+    headline = sanitize_label(verdict.get("headline"), fallback="", limit=180)
+    explanation = sanitize_label(verdict.get("explanation"), fallback="", limit=360)
+    if headline or explanation:
+        lines.extend([t(language, "ai_verdict_title"), "\n".join(item for item in [headline, explanation] if item), ""])
+    if direct:
+        lines.extend([t(language, "ai_direct_findings_title"), direct, ""])
+    if context_category not in {"group_social", "channel_or_broadcast"}:
+        you_patterns = string_bullets(participants.get("you", {}).get("observable_patterns"), limit=4)
+        if you_patterns:
+            lines.extend([t(language, "ai_you_title"), you_patterns, ""])
+        other_patterns = string_bullets(participants.get("other", {}).get("observable_patterns"), limit=4)
+        if other_patterns:
+            lines.extend([t(language, "ai_other_title"), other_patterns, ""])
+    if positive:
+        lines.extend([t(language, "ai_strengths_title"), positive, ""])
+    if problems:
+        lines.extend([t(language, "ai_weakens_title"), problems, ""])
+    main_title = sanitize_label(main_advice.get("title"), fallback="", limit=160)
+    main_explanation = sanitize_label(main_advice.get("explanation"), fallback="", limit=360)
+    if main_title or main_explanation:
+        lines.extend([t(language, "ai_main_advice"), "\n".join(item for item in [main_title, main_explanation] if item)])
     if score_state.get("insufficient_data"):
-        lines.extend(["", sanitize_label(score_state.get("explanation"), fallback=t(language, "ai_insufficient_data"), limit=220)])
+        lines.extend(["", score_state_explanation(score_state, language=language)])
     if isinstance(comparison, dict):
         lines.extend(["", format_period_comparison_compact(comparison, language=language)])
     if coverage_line:
         lines.extend(["", t(language, "ai_data_title"), coverage_line])
-    return "\n".join(lines)
+    limitations = compact_limitations(result.get("limitations"), language=language)
+    if limitations:
+        lines.extend(["", t(language, "ai_limitations_title"), limitations])
+    return "\n".join(line for line in lines if line is not None).strip()
 
 
 def format_ai_result_section(analysis: dict[str, Any], section: str, *, language: str = "en") -> str:
@@ -455,15 +466,19 @@ def format_ai_result_section(analysis: dict[str, Any], section: str, *, language
             lines.append(t(language, "ai_no_weak_replies"))
             return "\n".join(lines)
         for item in weak[:10]:
+            reference = sanitize_label(item.get("anonymous_message_reference") or item.get("message_reference"), fallback="", limit=40)
+            if language == "ru" and reference == "local-question-candidate":
+                reference = t(language, "ai_local_reference")
             lines.extend(
                 [
                     f"• {weak_reply_category_label(str(item.get('category')), language=language)}",
-                    f"{t(language, 'ai_severity')}: {sanitize_label(item.get('severity'), fallback='low', limit=20)}",
+                    f"{t(language, 'ai_severity')}: {severity_label(item.get('severity'), language=language)}",
                     sanitize_label(item.get("explanation"), fallback="", limit=500),
-                    f"{t(language, 'ai_reference')}: {sanitize_label(item.get('anonymous_message_reference') or item.get('message_reference'), fallback=t(language, 'not_available'), limit=40)}",
                     "",
                 ]
             )
+            if reference:
+                lines.insert(-1, f"{t(language, 'ai_reference')}: {reference}")
         return "\n".join(lines).strip()
     if section == "scores":
         lines = [t(language, "ai_scores_title"), "", t(language, "ai_score_formula"), ""]
@@ -471,69 +486,90 @@ def format_ai_result_section(analysis: dict[str, Any], section: str, *, language
             if not isinstance(row, dict):
                 continue
             if row.get("score") is None:
-                lines.extend(
-                    [
-                        f"{dimension_label(str(key), language=language)}: {t(language, 'ai_insufficient_data')}",
-                        sanitize_label(row.get("unavailable_reason") or row.get("explanation"), fallback="", limit=400),
-                        "",
-                    ]
-                )
+                if str(key) in {"sarcasm_intensity", "hostility", "dismissiveness"}:
+                    continue
+                reason = unavailable_dimension_text(str(key), row, language=language)
+                if reason:
+                    lines.extend([reason, ""])
                 continue
             lines.extend(
                 [
                     f"{dimension_label(str(key), language=language)}: {float(row.get('score') or 0):.1f} / 10",
-                    f"{t(language, 'ai_confidence_short')}: {sanitize_label(row.get('confidence'), fallback='low', limit=20)} · {t(language, 'ai_evidence_count')}: {int(row.get('evidence_count') or 0)}",
-                    sanitize_label(row.get("explanation"), fallback="", limit=400),
+                    f"{t(language, 'ai_confidence_short')}: {confidence_label(row.get('confidence'), language=language)} · {t(language, 'ai_evidence_count')}: {int(row.get('evidence_count') or 0)}",
+                    dimension_explanation(str(key), row, language=language),
                     "",
                 ]
             )
-        lines.extend([t(language, "ai_limitations_title"), string_bullets(result.get("limitations"), limit=6)])
+        limitations = compact_limitations(result.get("limitations"), language=language)
+        if limitations:
+            lines.extend([t(language, "ai_limitations_title"), limitations])
         return "\n".join(lines).strip()
     if section == "comparison":
         comparison = analysis.get("comparison") or result.get("period_comparison")
         if not isinstance(comparison, dict):
             comparison = {"status": "insufficient_data"}
         return format_period_comparison_full(comparison, language=language)
+    context = result.get("context") if isinstance(result.get("context"), dict) else {}
+    context_category = context.get("category")
     lines = [
         t(language, "ai_full_analysis_title"),
         "",
-        t(language, "ai_communication_score"),
+        context_label(context_category, language=language),
+        context_score_label(context_category, language=language),
         format_score_line(result, language=language),
         t(language, "ai_confidence_line", confidence=t(language, f"confidence_{result.get('score_confidence', 'low')}")),
         "",
-        t(language, "ai_verdict_title"),
-        verdict_line(result, language=language),
-        "",
-        t(language, "ai_summary_title"),
-        sanitize_label(result.get("summary"), fallback=t(language, "not_available"), limit=900),
-        "",
-        t(language, "ai_data_title"),
-        format_ai_coverage_line(result.get("coverage") or analysis.get("coverage") or {}, language=language) or t(language, "not_available"),
-        "",
     ]
+    context_note = low_confidence_context_note(context, language=language) if context else ""
+    if context_note:
+        lines.extend([context_note, ""])
+    verdict_text = verdict_line(result, language=language)
+    if verdict_text:
+        lines.extend([t(language, "ai_verdict_title"), verdict_text, ""])
+    summary = sanitize_label(result.get("summary"), fallback="", limit=900)
+    if summary:
+        lines.extend([t(language, "ai_summary_title"), summary, ""])
+    coverage_text = format_ai_coverage_line(result.get("coverage") or analysis.get("coverage") or {}, language=language)
+    if coverage_text:
+        lines.extend([t(language, "ai_data_title"), coverage_text, ""])
     participants = normalized_participants(result)
-    for participant_key, title_key in [("you", "ai_you_title"), ("other", "ai_other_title")]:
-        block = participants.get(participant_key) or {}
-        lines.extend(
-            [
-                t(language, title_key),
-                sanitize_label(block.get("summary"), fallback="", limit=360),
-                string_bullets(block.get("observable_patterns"), limit=5) or t(language, "not_available"),
-                "",
-            ]
-        )
+    if context_category not in {"group_social", "channel_or_broadcast"}:
+        for participant_key, title_key in [("you", "ai_you_title"), ("other", "ai_other_title")]:
+            block = participants.get(participant_key) or {}
+            block_lines = [sanitize_label(block.get("summary"), fallback="", limit=360), string_bullets(block.get("observable_patterns"), limit=5)]
+            block_text = "\n".join(item for item in block_lines if item)
+            if block_text:
+                lines.extend([t(language, title_key), block_text, ""])
     lines.extend([t(language, "ai_scores_title"), ""])
     for key, row in (result.get("dimensions") or {}).items():
         if not isinstance(row, dict):
             continue
-        score_text = f"{float(row.get('score')):.1f} / 10" if row.get("score") is not None else t(language, "ai_insufficient_data")
-        lines.extend([f"{dimension_label(str(key), language=language)}: {score_text}", sanitize_label(row.get("explanation") or row.get("unavailable_reason"), fallback="", limit=360), ""])
-    lines.extend([t(language, "ai_strengths_title"), pattern_bullets(result.get("positive_patterns"), limit=6) or t(language, "not_available"), ""])
-    lines.extend([t(language, "ai_weakens_title"), pattern_bullets(result.get("problem_patterns"), limit=6) or t(language, "not_available"), ""])
-    lines.extend([t(language, "ai_direct_findings_title"), direct_findings_bullets(result.get("direct_findings"), limit=8) or t(language, "not_available"), ""])
-    lines.extend([format_ai_result_section(analysis, "weak", language=language), ""])
-    lines.extend([format_ai_result_section(analysis, "advice", language=language), ""])
-    lines.extend([t(language, "ai_limitations_title"), string_bullets(result.get("limitations"), limit=6) or t(language, "not_available")])
+        if row.get("score") is None:
+            if str(key) in {"sarcasm_intensity", "hostility", "dismissiveness"}:
+                continue
+            reason = unavailable_dimension_text(str(key), row, language=language)
+            if reason:
+                lines.extend([reason, ""])
+            continue
+        lines.extend([f"{dimension_label(str(key), language=language)}: {float(row.get('score')):.1f} / 10", dimension_explanation(str(key), row, language=language), ""])
+    strengths = pattern_bullets(result.get("positive_patterns"), limit=6)
+    if strengths:
+        lines.extend([t(language, "ai_strengths_title"), strengths, ""])
+    weaknesses = pattern_bullets(result.get("problem_patterns"), limit=6)
+    if weaknesses:
+        lines.extend([t(language, "ai_weakens_title"), weaknesses, ""])
+    direct = direct_findings_bullets(result.get("direct_findings"), limit=8, language=language)
+    if direct:
+        lines.extend([t(language, "ai_direct_findings_title"), direct, ""])
+    weak_section = format_ai_result_section(analysis, "weak", language=language)
+    if weak_section and t(language, "ai_no_weak_replies") not in weak_section:
+        lines.extend([weak_section, ""])
+    advice_section = format_ai_result_section(analysis, "advice", language=language)
+    if advice_section:
+        lines.extend([advice_section, ""])
+    limitations = compact_limitations(result.get("limitations"), language=language)
+    if limitations:
+        lines.extend([t(language, "ai_limitations_title"), limitations])
     return "\n".join(lines).strip()
 
 
@@ -568,30 +604,27 @@ def format_automatic_analysis_result(
         return "\n\n".join([t(language, "automation_completed"), t(language, "comparison_not_enough")])
     result = analysis.get("result") or analysis
     score = result.get("overall_score")
+    context = result.get("context") if isinstance(result.get("context"), dict) else {}
     verdict = result.get("verdict") if isinstance(result.get("verdict"), dict) else {}
     advice = result.get("recommended_action") or {}
     lines = [
         t(language, "automation_completed"),
         "",
-        t(language, "ai_communication_score"),
-        f"{float(score):.1f} / 10" if isinstance(score, (int, float)) else t(language, "ai_insufficient_data"),
-        "",
-        t(language, "ai_summary_title"),
-        sanitize_label(result.get("summary"), fallback=t(language, "not_available"), limit=520),
-        "",
-        t(language, "ai_verdict_title"),
-        sanitize_label(verdict.get("headline"), fallback=t(language, "not_available"), limit=180),
+        context_score_label(context.get("category"), language=language),
+        f"{float(score):.1f} / 10" if isinstance(score, (int, float)) else t(language, "ai_score_unreliable"),
     ]
+    summary = sanitize_label(result.get("summary"), fallback="", limit=520)
+    if summary:
+        lines.extend(["", t(language, "ai_summary_title"), summary])
+    headline = sanitize_label(verdict.get("headline"), fallback="", limit=180)
+    if headline:
+        lines.extend(["", t(language, "ai_verdict_title"), headline])
     comparison = analysis.get("comparison") or result.get("period_comparison")
     if isinstance(comparison, dict):
         lines.extend(["", format_period_comparison_compact(comparison, language=language)])
-    lines.extend(
-        [
-            "",
-            t(language, "ai_main_advice"),
-            sanitize_label(advice.get("explanation"), fallback=t(language, "not_available"), limit=420),
-        ]
-    )
+    recommendation = sanitize_label(advice.get("explanation"), fallback="", limit=420)
+    if recommendation:
+        lines.extend(["", t(language, "ai_main_advice"), recommendation])
     if ai_failed:
         lines.extend(["", t(language, "analysis_result_ai_partial")])
     return "\n".join(lines).strip()
@@ -690,7 +723,7 @@ def pattern_bullets(values: Any, *, limit: int) -> str:
     return "\n".join(bullets)
 
 
-def direct_findings_bullets(values: Any, *, limit: int) -> str:
+def direct_findings_bullets(values: Any, *, limit: int, language: str = "en") -> str:
     rows = values if isinstance(values, list) else []
     bullets: list[str] = []
     for item in rows[:limit]:
@@ -699,8 +732,10 @@ def direct_findings_bullets(values: Any, *, limit: int) -> str:
         finding = sanitize_label(item.get("finding"), fallback="", limit=260)
         if not finding:
             continue
-        severity = sanitize_label(item.get("severity"), fallback="low", limit=20)
-        confidence = sanitize_label(item.get("confidence"), fallback="low", limit=20)
+        severity_key = sanitize_label(item.get("severity"), fallback="low", limit=20)
+        confidence_key = sanitize_label(item.get("confidence"), fallback="low", limit=20)
+        severity = t(language, f"severity_{severity_key}") if severity_key in {"low", "medium", "high"} else severity_key
+        confidence = t(language, f"confidence_{confidence_key}") if confidence_key in {"low", "medium", "high"} else confidence_key
         bullets.append(f"• {finding} ({severity}, {confidence})")
     return "\n".join(bullets)
 
@@ -740,7 +775,81 @@ def format_score_line(result: dict[str, Any], *, language: str) -> str:
     score = result.get("overall_score")
     if isinstance(score, (int, float)):
         return f"{float(score):.1f} / 10"
-    return t(language, "ai_insufficient_data")
+    return t(language, "ai_score_unreliable")
+
+
+def score_state_explanation(score_state: dict[str, Any], *, language: str) -> str:
+    reason = str(score_state.get("cap_reason") or "")
+    if score_state.get("insufficient_data"):
+        return t(language, "ai_score_insufficient_explanation")
+    key = {
+        "shallow_local_metrics": "ai_score_cap_shallow",
+        "deterministic_without_text_interpretation": "ai_score_cap_deterministic",
+        "sampled_ai_text_coverage": "ai_score_cap_sampled_ai",
+        "low_context_confidence": "ai_score_cap_context",
+        "limited_independent_dimensions": "ai_score_cap_limited_dimensions",
+    }.get(reason)
+    if key:
+        return t(language, key)
+    return sanitize_label(score_state.get("explanation"), fallback="", limit=260)
+
+
+def compact_limitations(value: Any, *, language: str) -> str:
+    rows = value if isinstance(value, list) else []
+    cleaned: list[str] = []
+    for item in rows[:5]:
+        text = sanitize_label(str(item), fallback="", limit=260)
+        if not text:
+            continue
+        if language == "ru" and looks_like_english_fallback(text):
+            continue
+        cleaned.append(text)
+    return "\n".join(f"• {item}" for item in cleaned)
+
+
+def looks_like_english_fallback(text: str) -> bool:
+    lowered = text.casefold()
+    fragments = [
+        "used local deterministic metrics",
+        "no ai text interpretation",
+        "the reason cannot be determined",
+        "not enough messages",
+        "too few supported",
+    ]
+    return any(fragment in lowered for fragment in fragments)
+
+
+def dimension_explanation(key: str, row: dict[str, Any], *, language: str) -> str:
+    if language == "ru":
+        mapped = t(language, f"ai_dimension_{key}_explanation")
+        if mapped != f"ai_dimension_{key}_explanation":
+            return mapped
+    return sanitize_label(row.get("explanation"), fallback="", limit=400)
+
+
+def unavailable_dimension_text(key: str, row: dict[str, Any], *, language: str) -> str:
+    if key == "sarcasm_intensity":
+        return t(language, "ai_sarcasm_unavailable")
+    if key == "hostility":
+        return t(language, "ai_hostility_unavailable")
+    if key == "dismissiveness":
+        return t(language, "ai_dismissiveness_unavailable")
+    reason = sanitize_label(row.get("unavailable_reason") or row.get("explanation"), fallback="", limit=320)
+    if not reason:
+        return ""
+    if language == "ru" and looks_like_english_fallback(reason):
+        reason = t(language, "ai_dimension_unavailable")
+    return f"{dimension_label(key, language=language)}: {reason}"
+
+
+def severity_label(value: Any, *, language: str) -> str:
+    key = sanitize_label(value, fallback="low", limit=20)
+    return t(language, f"severity_{key}") if key in {"low", "medium", "high"} else key
+
+
+def confidence_label(value: Any, *, language: str) -> str:
+    key = sanitize_label(value, fallback="low", limit=20)
+    return t(language, f"confidence_{key}") if key in {"low", "medium", "high"} else key
 
 
 def format_ai_coverage_line(coverage: dict[str, Any], *, language: str) -> str:

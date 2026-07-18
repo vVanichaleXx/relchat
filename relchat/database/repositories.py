@@ -642,6 +642,9 @@ def mark_user_chat_analyzed(
     source: str,
     chat_id: str,
     report_id: str,
+    *,
+    analysis_context_used: str | None = None,
+    analysis_framework_version: str | None = None,
 ) -> None:
     conn.execute(
         """
@@ -649,11 +652,92 @@ def mark_user_chat_analyzed(
         SET is_saved = 1,
             recent_analyzed_at = CURRENT_TIMESTAMP,
             last_report_id = ?,
+            analysis_context_used = COALESCE(?, analysis_context_used),
+            analysis_framework_version = COALESCE(?, analysis_framework_version),
             updated_at = CURRENT_TIMESTAMP
         WHERE bot_user_id = ? AND source = ? AND chat_id = ?
         """,
-        (report_id, bot_user_id, source, chat_id),
+        (report_id, analysis_context_used, analysis_framework_version, bot_user_id, source, chat_id),
     )
+
+
+def set_chat_context_classification(
+    conn: sqlite3.Connection,
+    bot_user_id: int,
+    source: str,
+    chat_id: str,
+    *,
+    category: str,
+    classification_source: str,
+    confidence: str,
+    evidence_types: list[str] | tuple[str, ...] | None = None,
+) -> None:
+    conn.execute(
+        """
+        UPDATE user_chats
+        SET confirmed_context_category = ?,
+            context_classification_source = ?,
+            context_classification_confidence = ?,
+            context_classification_evidence = ?,
+            context_classification_at = CURRENT_TIMESTAMP,
+            updated_at = CURRENT_TIMESTAMP
+        WHERE bot_user_id = ? AND source = ? AND chat_id = ?
+        """,
+        (
+            category,
+            classification_source,
+            confidence,
+            json_dumps(list(evidence_types or [])),
+            bot_user_id,
+            source,
+            chat_id,
+        ),
+    )
+
+
+def set_analysis_context_used(
+    conn: sqlite3.Connection,
+    bot_user_id: int,
+    source: str,
+    chat_id: str,
+    *,
+    category: str,
+    framework_version: str,
+) -> None:
+    conn.execute(
+        """
+        UPDATE user_chats
+        SET analysis_context_used = ?,
+            analysis_framework_version = ?,
+            updated_at = CURRENT_TIMESTAMP
+        WHERE bot_user_id = ? AND source = ? AND chat_id = ?
+        """,
+        (category, framework_version, bot_user_id, source, chat_id),
+    )
+
+
+def get_chat_context_classification(
+    conn: sqlite3.Connection,
+    bot_user_id: int,
+    source: str,
+    chat_id: str,
+) -> dict[str, Any] | None:
+    chat = get_user_chat(conn, bot_user_id, source, chat_id)
+    if not chat:
+        return None
+    category = chat.get("confirmed_context_category")
+    source_value = chat.get("context_classification_source")
+    confidence = chat.get("context_classification_confidence")
+    if not category and not source_value and not confidence:
+        return None
+    return {
+        "category": category,
+        "source": source_value,
+        "confidence": confidence,
+        "evidence_types": chat.get("context_classification_evidence") or [],
+        "classified_at": chat.get("context_classification_at"),
+        "user_confirmed": source_value == "user_confirmed",
+    }
 
 
 def remove_user_chat(conn: sqlite3.Connection, bot_user_id: int, source: str, chat_id: str) -> None:
@@ -709,6 +793,7 @@ def delete_imported_messages_for_chat(
 
 def user_chat_from_row(row: sqlite3.Row) -> dict[str, Any]:
     title = row["local_title"] or row["display_title"]
+    keys = set(row.keys())
     return {
         "bot_user_id": int(row["bot_user_id"]),
         "source": row["source"],
@@ -725,6 +810,13 @@ def user_chat_from_row(row: sqlite3.Row) -> dict[str, Any]:
         "is_favorite": bool(row["is_favorite"]),
         "recent_analyzed_at": row["recent_analyzed_at"],
         "last_report_id": row["last_report_id"],
+        "confirmed_context_category": row["confirmed_context_category"] if "confirmed_context_category" in keys else None,
+        "context_classification_source": row["context_classification_source"] if "context_classification_source" in keys else None,
+        "context_classification_confidence": row["context_classification_confidence"] if "context_classification_confidence" in keys else None,
+        "context_classification_evidence": json_loads(row["context_classification_evidence"] if "context_classification_evidence" in keys else None, []),
+        "context_classification_at": row["context_classification_at"] if "context_classification_at" in keys else None,
+        "analysis_context_used": row["analysis_context_used"] if "analysis_context_used" in keys else None,
+        "analysis_framework_version": row["analysis_framework_version"] if "analysis_framework_version" in keys else None,
         "created_at": row["created_at"],
         "updated_at": row["updated_at"],
     }
@@ -937,7 +1029,11 @@ def list_important_chats(
 def list_automation_enabled_chats(conn: sqlite3.Connection, *, limit: int | None = None) -> list[dict[str, Any]]:
     sql = """
         SELECT important_chat_settings.*, user_chats.display_title, user_chats.local_title,
-               user_chats.chat_type, user_chats.username, user_settings.automatic_analysis_master_enabled,
+               user_chats.chat_type, user_chats.username,
+               user_chats.confirmed_context_category, user_chats.context_classification_source,
+               user_chats.context_classification_confidence, user_chats.context_classification_evidence,
+               user_chats.context_classification_at,
+               user_settings.automatic_analysis_master_enabled,
                user_settings.default_modules, user_settings.automatic_default_notification_enabled,
                user_settings.automatic_default_minimum_new_messages,
                user_settings.automatic_default_inactivity_minutes,
@@ -997,6 +1093,11 @@ def important_chat_settings_from_row(row: sqlite3.Row, *, defaults: dict[str, An
         "title": title,
         "username": row["username"] if "username" in keys else None,
         "last_report_id": row["last_report_id"] if "last_report_id" in keys else None,
+        "confirmed_context_category": row["confirmed_context_category"] if "confirmed_context_category" in keys else None,
+        "context_classification_source": row["context_classification_source"] if "context_classification_source" in keys else None,
+        "context_classification_confidence": row["context_classification_confidence"] if "context_classification_confidence" in keys else None,
+        "context_classification_evidence": json_loads(row["context_classification_evidence"] if "context_classification_evidence" in keys else None, []),
+        "context_classification_at": row["context_classification_at"] if "context_classification_at" in keys else None,
         "is_important": bool(row["is_important"]),
         "automatic_analysis_enabled": bool(row["automatic_analysis_enabled"]),
         "automatic_notification_enabled": bool(row["automatic_notification_enabled"]),

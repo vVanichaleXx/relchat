@@ -119,6 +119,13 @@ CREATE TABLE IF NOT EXISTS user_chats (
   is_favorite INTEGER NOT NULL DEFAULT 0,
   recent_analyzed_at TEXT,
   last_report_id TEXT,
+  confirmed_context_category TEXT,
+  context_classification_source TEXT,
+  context_classification_confidence TEXT,
+  context_classification_evidence TEXT NOT NULL DEFAULT '[]',
+  context_classification_at TEXT,
+  analysis_context_used TEXT,
+  analysis_framework_version TEXT,
   created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
   updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
   PRIMARY KEY(bot_user_id, source, chat_id)
@@ -408,6 +415,13 @@ def migrate_schema(conn: sqlite3.Connection) -> None:
     ensure_column(conn, "user_chats", "unread_count", "INTEGER NOT NULL DEFAULT 0")
     ensure_column(conn, "user_chats", "recent_analyzed_at", "TEXT")
     ensure_column(conn, "user_chats", "last_report_id", "TEXT")
+    ensure_column(conn, "user_chats", "confirmed_context_category", "TEXT")
+    ensure_column(conn, "user_chats", "context_classification_source", "TEXT")
+    ensure_column(conn, "user_chats", "context_classification_confidence", "TEXT")
+    ensure_column(conn, "user_chats", "context_classification_evidence", "TEXT NOT NULL DEFAULT '[]'")
+    ensure_column(conn, "user_chats", "context_classification_at", "TEXT")
+    ensure_column(conn, "user_chats", "analysis_context_used", "TEXT")
+    ensure_column(conn, "user_chats", "analysis_framework_version", "TEXT")
     ensure_column(conn, "user_settings", "automatic_analysis_master_enabled", "INTEGER NOT NULL DEFAULT 0")
     ensure_column(conn, "user_settings", "automatic_default_notification_enabled", "INTEGER NOT NULL DEFAULT 1")
     ensure_column(conn, "user_settings", "automatic_default_minimum_new_messages", "INTEGER NOT NULL DEFAULT 10")
