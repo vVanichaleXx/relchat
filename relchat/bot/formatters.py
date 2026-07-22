@@ -10,6 +10,7 @@ from relchat.events.extractor import summarize_events
 from relchat.bot.localization import t
 from relchat.bot.services.chat_home_service import build_chat_home_view_model
 from relchat.bot.services.context import context_label, context_score_label, low_confidence_context_note
+from relchat.bot.services.evidence_service import build_why_conclusion_panels
 from relchat.bot.services.period_comparison import format_period_comparison_compact, format_period_comparison_full
 from relchat.bot.services.timeline_service import RelationshipTimeline, TimelineEntry, TimelinePage, TimelineStoryItem, TimelineStoryPage, paginate_timeline_story
 from relchat.bot.state import module_labels
@@ -398,6 +399,13 @@ def format_ai_result_overview(analysis: dict[str, Any], *, chat_title: str | Non
     comparison = analysis.get("comparison") or result.get("period_comparison")
     context = result.get("context") if isinstance(result.get("context"), dict) else {}
     context_category = context.get("category")
+    individualized = result.get("individualized_story") if isinstance(result.get("individualized_story"), dict) else {}
+    distinctive_text = format_selected_patterns_compact(result.get("selected_patterns"), language=language, limit=3)
+    feedback = result.get("personalized_feedback") if isinstance(result.get("personalized_feedback"), dict) else {}
+    score_explanation = format_score_explanation_compact(result.get("score_explanation"), language=language)
+    history_text = format_history_segments_compact(result.get("history_segments"), language=language)
+    if context_category == "work":
+        return format_work_result_overview(analysis, chat_title=title, language=language)
     lines = [title, "", t(language, "ai_communication_analysis"), context_label(context_category, language=language), ""]
     context_note = low_confidence_context_note(context, language=language) if context else ""
     if context_note:
@@ -410,32 +418,66 @@ def format_ai_result_overview(analysis: dict[str, Any], *, chat_title: str | Non
             "",
         ]
     )
-    summary = sanitize_label(result.get("summary"), fallback="", limit=700)
-    if summary:
-        lines.extend([t(language, "ai_summary_title"), summary, ""])
+    story_intro = format_individualized_story_overview(individualized, language=language)
+    if story_intro:
+        lines.extend([story_intro, ""])
+    else:
+        summary = sanitize_label(result.get("summary"), fallback="", limit=700)
+        if summary and not is_meta_filler(summary):
+            lines.extend([t(language, "ai_summary_title"), summary, ""])
+    if distinctive_text:
+        lines.extend([t(language, "individual_distinctive_title"), distinctive_text, ""])
     headline = sanitize_label(verdict.get("headline"), fallback="", limit=180)
     explanation = sanitize_label(verdict.get("explanation"), fallback="", limit=360)
-    if headline or explanation:
+    if not individualized and (headline or explanation):
         lines.extend([t(language, "ai_verdict_title"), "\n".join(item for item in [headline, explanation] if item), ""])
+    story = result.get("communication_story") if isinstance(result.get("communication_story"), dict) else {}
+    happening = sanitize_label(story.get("what_is_happening"), fallback="", limit=420)
+    if happening and not individualized and not is_meta_filler(happening):
+        lines.extend([t(language, "story_what_is_happening_title"), happening, ""])
+    if history_text:
+        lines.extend([t(language, "history_section_title"), history_text, ""])
     if direct:
         lines.extend([t(language, "ai_direct_findings_title"), direct, ""])
+    profile = result.get("personal_profile") if isinstance(result.get("personal_profile"), dict) else {}
+    profile_text = format_personal_profile_compact(profile, story=individualized, language=language)
+    profile_contains_user_role = bool(profile_text and individualized.get("user_role"))
+    if profile_text and context_category not in {"group_social", "channel_or_broadcast"}:
+        lines.extend([t(language, "personal_profile_title"), profile_text, ""])
     if context_category not in {"group_social", "channel_or_broadcast"}:
-        you_patterns = string_bullets(participants.get("you", {}).get("observable_patterns"), limit=4)
-        if you_patterns:
+        balance_text = format_participation_balance(result, participants, language=language)
+        has_asymmetry = any(
+            isinstance(row, dict) and row.get("participant_scope") in {"you", "other"} and not row.get("generic")
+            for row in (result.get("selected_patterns") if isinstance(result.get("selected_patterns"), list) else [])
+        )
+        participation = result.get("participation_interpretation") if isinstance(result.get("participation_interpretation"), dict) else {}
+        if balance_text and (participation.get("has_scope_difference") or not has_asymmetry):
+            lines.extend([t(language, "participation_balance_title"), balance_text, ""])
+        you_patterns = sanitize_label(individualized.get("user_role"), fallback="", limit=420)
+        if not you_patterns:
+            you_patterns = participant_pattern_bullets(participants.get("you", {}).get("observable_patterns"), participants.get("other", {}).get("observable_patterns"), side="you", limit=4)
+        if you_patterns and not profile_contains_user_role:
             lines.extend([t(language, "ai_you_title"), you_patterns, ""])
-        other_patterns = string_bullets(participants.get("other", {}).get("observable_patterns"), limit=4)
+        other_patterns = sanitize_label(individualized.get("other_role"), fallback="", limit=420)
+        if not other_patterns:
+            other_patterns = participant_pattern_bullets(participants.get("other", {}).get("observable_patterns"), participants.get("you", {}).get("observable_patterns"), side="other", limit=4)
         if other_patterns:
             lines.extend([t(language, "ai_other_title"), other_patterns, ""])
     if positive:
         lines.extend([t(language, "ai_strengths_title"), positive, ""])
     if problems:
         lines.extend([t(language, "ai_weakens_title"), problems, ""])
-    main_title = sanitize_label(main_advice.get("title"), fallback="", limit=160)
-    main_explanation = sanitize_label(main_advice.get("explanation"), fallback="", limit=360)
+    main_title = sanitize_label(feedback.get("recommendation") if feedback.get("action_needed") else main_advice.get("title"), fallback="", limit=160)
+    main_explanation = sanitize_label(feedback.get("reason") if feedback.get("action_needed") else main_advice.get("explanation"), fallback="", limit=360)
     if main_title or main_explanation:
         lines.extend([t(language, "ai_main_advice"), "\n".join(item for item in [main_title, main_explanation] if item)])
     if score_state.get("insufficient_data"):
-        lines.extend(["", score_state_explanation(score_state, language=language)])
+        if score_explanation:
+            lines.extend(["", score_explanation])
+        else:
+            lines.extend(["", score_state_explanation(score_state, language=language)])
+    elif score_explanation:
+        lines.extend(["", score_explanation])
     if isinstance(comparison, dict):
         lines.extend(["", format_period_comparison_compact(comparison, language=language)])
     if coverage_line:
@@ -443,14 +485,99 @@ def format_ai_result_overview(analysis: dict[str, Any], *, chat_title: str | Non
     limitations = compact_limitations(result.get("limitations"), language=language)
     if limitations:
         lines.extend(["", t(language, "ai_limitations_title"), limitations])
-    return "\n".join(line for line in lines if line is not None).strip()
+    return dedupe_report_text(lines, language=language)
+
+
+def format_work_result_overview(analysis: dict[str, Any], *, chat_title: str, language: str = "en") -> str:
+    result = analysis.get("result") or analysis
+    score = result.get("overall_score")
+    confidence = result.get("score_confidence") or result.get("confidence") or "low"
+    score_line = f"{float(score):.1f} / 10" if isinstance(score, (int, float)) else t(language, "ai_score_unreliable")
+    participants = normalized_participants(result)
+    story = result.get("communication_story") if isinstance(result.get("communication_story"), dict) else {}
+    individualized = result.get("individualized_story") if isinstance(result.get("individualized_story"), dict) else {}
+    happening = sanitize_label(
+        individualized.get("overall_picture") or story.get("what_is_happening") or result.get("summary"),
+        fallback="",
+        limit=620,
+    )
+    distinctive = format_selected_patterns_compact(result.get("selected_patterns"), language=language, limit=3)
+    you_patterns = participant_pattern_bullets(participants.get("you", {}).get("observable_patterns"), participants.get("other", {}).get("observable_patterns"), side="you", limit=4)
+    if individualized.get("user_role"):
+        you_patterns = sanitize_label(individualized.get("user_role"), fallback="", limit=420)
+    other_patterns = participant_pattern_bullets(participants.get("other", {}).get("observable_patterns"), participants.get("you", {}).get("observable_patterns"), side="other", limit=4)
+    if individualized.get("other_role"):
+        other_patterns = sanitize_label(individualized.get("other_role"), fallback="", limit=420)
+    if not you_patterns:
+        you_patterns = work_user_summary_from_profile(result.get("personal_profile"), language=language)
+    helps = pattern_bullets(result.get("positive_patterns"), limit=3)
+    weakens = pattern_bullets(result.get("problem_patterns"), limit=3)
+    advice_rows = result.get("advice") if isinstance(result.get("advice"), list) else []
+    advice = advice_rows[0] if advice_rows and isinstance(advice_rows[0], dict) else {}
+    feedback = result.get("personalized_feedback") if isinstance(result.get("personalized_feedback"), dict) else {}
+    history = result.get("history_segments") if isinstance(result.get("history_segments"), dict) else {}
+    recent_change = sanitize_label(individualized.get("historical_note") or history.get("recent_change"), fallback="", limit=300)
+    score_explanation = format_score_explanation_compact(result.get("score_explanation"), language=language)
+    coverage_line = format_ai_coverage_line(result.get("coverage") or analysis.get("coverage") or {}, language=language)
+    limitations = compact_limitations(result.get("limitations"), language=language)
+    lines = [
+        chat_title,
+        "",
+        context_label("work", language=language),
+        "",
+        context_score_label("work", language=language),
+        score_line,
+        t(language, "ai_confidence_line", confidence=confidence_label(confidence, language=language)),
+        "",
+    ]
+    headline = sanitize_label(individualized.get("headline"), fallback="", limit=180)
+    if headline:
+        lines.extend([headline, ""])
+    if happening and not is_meta_filler(happening):
+        lines.extend([t(language, "work_report_happening_title"), happening, ""])
+    if distinctive:
+        lines.extend([t(language, "individual_distinctive_title"), distinctive, ""])
+    if you_patterns:
+        lines.extend([t(language, "work_report_you_title"), you_patterns, ""])
+    if other_patterns:
+        lines.extend([t(language, "work_report_other_title"), other_patterns, ""])
+    if helps:
+        lines.extend([t(language, "work_report_helps_title"), helps, ""])
+    if weakens:
+        lines.extend([t(language, "work_report_blocks_title"), weakens, ""])
+    advice_text = "\n".join(
+        item
+        for item in [
+            sanitize_label(feedback.get("recommendation") if feedback.get("action_needed") else advice.get("title"), fallback="", limit=180),
+            sanitize_label(feedback.get("reason") if feedback.get("action_needed") else advice.get("explanation"), fallback="", limit=460),
+        ]
+        if item
+    )
+    if advice_text:
+        lines.extend([t(language, "ai_main_advice"), advice_text, ""])
+    if recent_change:
+        lines.extend([t(language, "work_report_changes_title"), recent_change, ""])
+    if score_explanation:
+        lines.extend([score_explanation, ""])
+    data_lines = "\n".join(item for item in [coverage_line, limitations] if item)
+    if data_lines:
+        lines.extend([t(language, "work_report_data_title"), data_lines])
+    return dedupe_report_text(lines, language=language)
 
 
 def format_ai_result_section(analysis: dict[str, Any], section: str, *, language: str = "en") -> str:
     result = analysis.get("result") or analysis
+    if section == "why":
+        return format_why_conclusion_section(result, language=language)
     if section == "advice":
         lines = [t(language, "ai_advice_title"), ""]
-        for item in (result.get("advice") or [])[:5]:
+        advice_rows = result.get("advice") or []
+        if not advice_rows:
+            feedback = result.get("personalized_feedback") if isinstance(result.get("personalized_feedback"), dict) else {}
+            message = sanitize_label(feedback.get("recommendation") or feedback.get("omitted_reason"), fallback=t(language, "feedback_no_action_general"), limit=420)
+            lines.append(message)
+            return "\n".join(lines).strip()
+        for item in advice_rows[:5]:
             lines.extend([
                 f"{int(item.get('priority') or 1)}. {sanitize_label(item.get('title'), fallback=t(language, 'not_available'), limit=160)}",
                 sanitize_label(item.get("explanation"), fallback="", limit=500),
@@ -481,7 +608,10 @@ def format_ai_result_section(analysis: dict[str, Any], section: str, *, language
                 lines.insert(-1, f"{t(language, 'ai_reference')}: {reference}")
         return "\n".join(lines).strip()
     if section == "scores":
-        lines = [t(language, "ai_scores_title"), "", t(language, "ai_score_formula"), ""]
+        explanation = format_score_explanation_full(result.get("score_explanation"), language=language)
+        lines = [t(language, "ai_scores_title"), ""]
+        if explanation:
+            lines.extend([explanation, ""])
         for key, row in (result.get("dimensions") or {}).items():
             if not isinstance(row, dict):
                 continue
@@ -523,35 +653,59 @@ def format_ai_result_section(analysis: dict[str, Any], section: str, *, language
     context_note = low_confidence_context_note(context, language=language) if context else ""
     if context_note:
         lines.extend([context_note, ""])
+    individualized = result.get("individualized_story") if isinstance(result.get("individualized_story"), dict) else {}
+    story_overview = format_individualized_story_overview(individualized, language=language)
+    if story_overview:
+        lines.extend([t(language, "story_what_is_happening_title"), story_overview, ""])
     verdict_text = verdict_line(result, language=language)
-    if verdict_text:
+    if verdict_text and not individualized:
         lines.extend([t(language, "ai_verdict_title"), verdict_text, ""])
     summary = sanitize_label(result.get("summary"), fallback="", limit=900)
-    if summary:
+    if summary and not individualized and not is_meta_filler(summary):
         lines.extend([t(language, "ai_summary_title"), summary, ""])
+    distinctive = format_selected_patterns_compact(result.get("selected_patterns"), language=language, limit=6)
+    if distinctive:
+        lines.extend([t(language, "individual_distinctive_title"), distinctive, ""])
+    story = result.get("communication_story") if isinstance(result.get("communication_story"), dict) else {}
+    story_text = format_communication_story(story, language=language)
+    if story_text and not individualized:
+        lines.extend([t(language, "communication_story_title"), story_text, ""])
+    history_text = format_history_segments_full(result.get("history_segments"), language=language)
+    if history_text:
+        lines.extend([t(language, "history_section_title"), history_text, ""])
+    profile_text = format_personal_profile_detail(
+        result.get("personal_profile") if isinstance(result.get("personal_profile"), dict) else {},
+        story=individualized,
+        language=language,
+    )
+    profile_contains_user_role = bool(profile_text and individualized.get("user_role"))
+    if profile_text and context_category not in {"group_social", "channel_or_broadcast"}:
+        lines.extend([t(language, "personal_profile_title"), profile_text, ""])
     coverage_text = format_ai_coverage_line(result.get("coverage") or analysis.get("coverage") or {}, language=language)
     if coverage_text:
         lines.extend([t(language, "ai_data_title"), coverage_text, ""])
     participants = normalized_participants(result)
     if context_category not in {"group_social", "channel_or_broadcast"}:
+        balance_text = format_participation_balance(result, participants, language=language)
+        if balance_text:
+            lines.extend([t(language, "participation_balance_title"), balance_text, ""])
         for participant_key, title_key in [("you", "ai_you_title"), ("other", "ai_other_title")]:
+            if participant_key == "you" and profile_contains_user_role:
+                continue
             block = participants.get(participant_key) or {}
-            block_lines = [sanitize_label(block.get("summary"), fallback="", limit=360), string_bullets(block.get("observable_patterns"), limit=5)]
+            other_key = "other" if participant_key == "you" else "you"
+            story_key = "user_role" if participant_key == "you" else "other_role"
+            story_line = sanitize_label(individualized.get(story_key), fallback="", limit=420)
+            block_lines = [
+                story_line or sanitize_label(block.get("summary"), fallback="", limit=360),
+                "" if story_line else participant_pattern_bullets(block.get("observable_patterns"), participants.get(other_key, {}).get("observable_patterns"), side=participant_key, limit=5),
+            ]
             block_text = "\n".join(item for item in block_lines if item)
             if block_text:
                 lines.extend([t(language, title_key), block_text, ""])
-    lines.extend([t(language, "ai_scores_title"), ""])
-    for key, row in (result.get("dimensions") or {}).items():
-        if not isinstance(row, dict):
-            continue
-        if row.get("score") is None:
-            if str(key) in {"sarcasm_intensity", "hostility", "dismissiveness"}:
-                continue
-            reason = unavailable_dimension_text(str(key), row, language=language)
-            if reason:
-                lines.extend([reason, ""])
-            continue
-        lines.extend([f"{dimension_label(str(key), language=language)}: {float(row.get('score')):.1f} / 10", dimension_explanation(str(key), row, language=language), ""])
+    score_explanation = format_score_explanation_full(result.get("score_explanation"), language=language)
+    if score_explanation:
+        lines.extend([score_explanation, ""])
     strengths = pattern_bullets(result.get("positive_patterns"), limit=6)
     if strengths:
         lines.extend([t(language, "ai_strengths_title"), strengths, ""])
@@ -570,7 +724,7 @@ def format_ai_result_section(analysis: dict[str, Any], section: str, *, language
     limitations = compact_limitations(result.get("limitations"), language=language)
     if limitations:
         lines.extend([t(language, "ai_limitations_title"), limitations])
-    return "\n".join(lines).strip()
+    return dedupe_report_text(lines, language=language)
 
 
 def format_automation_suggestion(
@@ -627,6 +781,142 @@ def format_automatic_analysis_result(
         lines.extend(["", t(language, "ai_main_advice"), recommendation])
     if ai_failed:
         lines.extend(["", t(language, "analysis_result_ai_partial")])
+    return "\n".join(lines).strip()
+
+
+def format_individualized_story_overview(story: dict[str, Any], *, language: str) -> str:
+    if not story:
+        return ""
+    headline = sanitize_label(story.get("headline"), fallback="", limit=180)
+    overall = sanitize_label(story.get("overall_picture"), fallback="", limit=620)
+    dynamic = sanitize_label(story.get("distinctive_dynamic"), fallback="", limit=420)
+    rows = []
+    if headline and not is_meta_filler(headline):
+        rows.append(headline)
+    if overall and not is_meta_filler(overall) and semantic_text_key(overall) != semantic_text_key(headline):
+        rows.append(overall)
+    if dynamic and not is_meta_filler(dynamic) and semantic_text_key(dynamic) not in {semantic_text_key(headline), semantic_text_key(overall)}:
+        rows.append(dynamic)
+    return "\n".join(rows).strip()
+
+
+def format_selected_patterns_compact(value: Any, *, language: str, limit: int = 3) -> str:
+    del language
+    rows = value if isinstance(value, list) else []
+    bullets: list[str] = []
+    seen: set[str] = set()
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        if row.get("generic") and len(rows) > 1:
+            continue
+        text = sanitize_label(row.get("observation"), fallback="", limit=260)
+        consequence = sanitize_label(row.get("consequence"), fallback="", limit=220)
+        if not text or is_meta_filler(text):
+            continue
+        if consequence and semantic_text_key(consequence) not in {semantic_text_key(text), "none"}:
+            text = f"{text} {consequence}"
+        key = semantic_text_key(text)
+        if key in seen:
+            continue
+        seen.add(key)
+        bullets.append(f"• {text}")
+        if len(bullets) >= limit:
+            break
+    return "\n".join(bullets)
+
+
+def format_personal_profile_compact(profile: dict[str, Any], *, story: dict[str, Any] | None = None, language: str) -> str:
+    if not profile:
+        return ""
+    story = story if isinstance(story, dict) else {}
+    story_role = sanitize_label(story.get("user_role"), fallback="", limit=360)
+    summary = sanitize_label(story_role or profile.get("summary"), fallback="", limit=360)
+    if is_meta_filler(summary):
+        summary = ""
+    dimensions = profile.get("dimensions") if isinstance(profile.get("dimensions"), list) else []
+    bullets = []
+    for row in dimensions[:3]:
+        if not isinstance(row, dict):
+            continue
+        observation = sanitize_label(row.get("observation"), fallback="", limit=240)
+        if observation and not is_meta_filler(observation) and semantic_text_key(observation) != semantic_text_key(summary):
+            bullets.append(f"• {observation}")
+    return "\n".join([item for item in [summary, "\n".join(bullets)] if item]).strip()
+
+
+def format_personal_profile_detail(profile: dict[str, Any], *, story: dict[str, Any] | None = None, language: str) -> str:
+    if not profile:
+        return ""
+    lines: list[str] = []
+    story = story if isinstance(story, dict) else {}
+    summary = sanitize_label(story.get("user_role") or profile.get("summary"), fallback="", limit=420)
+    if summary and not is_meta_filler(summary):
+        lines.append(summary)
+    for row in (profile.get("dimensions") or [])[:10]:
+        if not isinstance(row, dict):
+            continue
+        label = t(language, f"profile_dimension_{row.get('dimension') or 'unknown'}")
+        observation = sanitize_label(row.get("observation"), fallback="", limit=300)
+        if observation and not is_meta_filler(observation) and semantic_text_key(observation) != semantic_text_key(summary):
+            lines.append(f"• {label}: {observation}")
+    limitations = compact_limitations(profile.get("limitations"), language=language)
+    if limitations:
+        lines.extend(["", limitations])
+    return "\n".join(lines).strip()
+
+
+def format_communication_story(story: dict[str, Any], *, language: str) -> str:
+    if not story:
+        return ""
+    rows = [
+        ("story_what_is_happening_title", story.get("what_is_happening")),
+        ("story_main_driver_title", story.get("main_driver")),
+        ("story_you_title", story.get("how_you_communicate")),
+        ("story_other_title", story.get("how_other_responds")),
+    ]
+    lines: list[str] = []
+    for title_key, value in rows:
+        text = sanitize_label(value, fallback="", limit=420)
+        if text:
+            lines.extend([t(language, title_key), text, ""])
+    semantic = string_bullets(story.get("semantic_dynamics"), limit=4)
+    if semantic:
+        lines.extend([t(language, "story_semantic_dynamics_title"), semantic, ""])
+    uncertainties = string_bullets(story.get("uncertainties"), limit=3)
+    if uncertainties:
+        lines.extend([t(language, "story_uncertainties_title"), uncertainties])
+    return "\n".join(lines).strip()
+
+
+def format_why_conclusion_section(result: dict[str, Any], *, language: str) -> str:
+    panels = build_why_conclusion_panels(result, language=language, limit=5)
+    if not panels:
+        return "\n\n".join([t(language, "why_conclusion_title"), t(language, "why_no_evidence_findings")])
+    lines = [t(language, "why_conclusion_title"), ""]
+    for panel in panels:
+        lines.append(sanitize_label(panel.get("title"), fallback=t(language, "why_conclusion_title"), limit=180))
+        observed = sanitize_label(panel.get("observed"), fallback="", limit=500)
+        interpretation = sanitize_label(panel.get("interpretation"), fallback="", limit=500)
+        evidence = panel.get("supporting_evidence") or []
+        alternatives = panel.get("alternative_interpretations") or []
+        limitations = panel.get("limitations") or []
+        if observed:
+            lines.extend([t(language, "why_observed_title"), observed])
+        if interpretation:
+            lines.extend([t(language, "why_interpretation_title"), interpretation])
+        if evidence:
+            lines.extend([t(language, "why_supporting_evidence_title"), string_bullets(evidence, limit=6)])
+        if alternatives:
+            lines.extend([t(language, "why_alternative_title"), string_bullets(alternatives, limit=3)])
+        scope = sanitize_label(panel.get("evidence_scope"), fallback="selected_period", limit=60)
+        if scope:
+            scope_label = t(language, f"evidence_scope_{scope}") if scope in {"full_history", "recent_window", "recurring_across_periods", "selected_period"} else scope
+            lines.append(f"{t(language, 'why_scope_title')}: {scope_label}")
+        lines.append(f"{t(language, 'why_confidence_title')}: {confidence_label(panel.get('confidence'), language=language)}")
+        if limitations:
+            lines.extend([t(language, "why_limitations_title"), string_bullets(limitations, limit=3)])
+        lines.append("")
     return "\n".join(lines).strip()
 
 
@@ -705,22 +995,263 @@ def result_data_quality_line(report: dict[str, Any], *, language: str) -> str:
 
 def string_bullets(values: Any, *, limit: int) -> str:
     rows = values if isinstance(values, list) else []
-    return "\n".join(f"• {sanitize_label(str(item), fallback='', limit=220)}" for item in rows[:limit] if str(item).strip())
+    bullets: list[str] = []
+    for item in rows[:limit]:
+        if isinstance(item, dict):
+            text = sanitize_label(item.get("text") or item.get("title") or item.get("summary"), fallback="", limit=220)
+        else:
+            text = sanitize_label(str(item), fallback="", limit=220)
+        if text:
+            bullets.append(f"• {text}")
+    return "\n".join(bullets)
+
+
+def work_user_summary_from_profile(value: Any, *, language: str) -> str:
+    profile = value if isinstance(value, dict) else {}
+    rows = profile.get("dimensions") if isinstance(profile.get("dimensions"), list) else []
+    bullets: list[str] = []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        dimension = str(row.get("dimension") or "")
+        if dimension not in {"directness", "planning_clarity", "question_engagement", "responsiveness"}:
+            continue
+        observation = sanitize_label(row.get("observation"), fallback="", limit=220)
+        if observation:
+            bullets.append(f"• {observation}")
+        if len(bullets) >= 3:
+            break
+    return "\n".join(bullets)
+
+
+def dedupe_report_text(lines: list[str], *, language: str) -> str:
+    result: list[str] = []
+    seen: set[str] = set()
+    for line in lines:
+        if line is None:
+            continue
+        text = normalize_composed_text(str(line))
+        if not text:
+            result.append(text)
+            continue
+        key = semantic_text_key(text)
+        if key in {"no_meaningful_change", "similar_recent_rhythm"} and key in seen:
+            continue
+        if key in seen and len(text) > 40 and not text.startswith("•"):
+            continue
+        seen.add(key)
+        result.append(text)
+    rendered = "\n".join(line for line in result if line is not None).strip()
+    if language == "ru":
+        rendered = rendered.replace("кандидата на вопрос", "вопроса").replace("кандидатов на вопросы", "вопросов")
+    return normalize_composed_text(rendered)
+
+
+def normalize_composed_text(text: str) -> str:
+    result = text
+    repeated_prefixes = (
+        "In this chat,",
+        "In this work chat,",
+        "In work topics,",
+        "В этой переписке",
+        "В этом рабочем чате",
+        "В рабочих вопросах",
+    )
+    for prefix in repeated_prefixes:
+        escaped = re.escape(prefix)
+        result = re.sub(rf"({escaped}\s*){{2,}}", f"{prefix} ", result, flags=re.IGNORECASE)
+    result = re.sub(r"\b(pattern)\s+\1\b", r"\1", result, flags=re.IGNORECASE)
+    result = re.sub(r"\b(паттерн)\s+\1\b", r"\1", result, flags=re.IGNORECASE)
+    result = dedupe_adjacent_sentences(result)
+    return re.sub(r"[ \t]{2,}", " ", result).strip()
+
+
+def dedupe_adjacent_sentences(text: str) -> str:
+    parts = re.split(r"(?<=[.!?])[ \t]+", text)
+    if len(parts) <= 1:
+        return text
+    result: list[str] = []
+    previous_key = ""
+    for part in parts:
+        key = semantic_text_key(part)
+        if key and key == previous_key:
+            continue
+        result.append(part)
+        previous_key = key
+    return " ".join(result)
+
+
+GENERIC_STRENGTH_KEYS = {
+    "both_participated",
+    "visible_activity",
+    "messages_found",
+    "similar_visible_volume",
+}
 
 
 def pattern_bullets(values: Any, *, limit: int) -> str:
     rows = values if isinstance(values, list) else []
     bullets: list[str] = []
-    for item in rows[:limit]:
+    for item in rows:
         if isinstance(item, dict):
             title = sanitize_label(item.get("title"), fallback="", limit=140)
             explanation = sanitize_label(item.get("explanation"), fallback="", limit=220)
             text = title if not explanation else f"{title}: {explanation}"
         else:
             text = sanitize_label(str(item), fallback="", limit=220)
-        if text:
+        if text and semantic_text_key(text) not in GENERIC_STRENGTH_KEYS:
             bullets.append(f"• {text}")
+        if len(bullets) >= limit:
+            break
     return "\n".join(bullets)
+
+
+def participant_pattern_bullets(values: Any, comparison_values: Any, *, side: str, limit: int) -> str:
+    rows = [str(item) for item in (values if isinstance(values, list) else []) if str(item).strip()]
+    comparison_keys = {semantic_text_key(str(item)) for item in (comparison_values if isinstance(comparison_values, list) else [])}
+    bullets: list[str] = []
+    seen: set[str] = set()
+    for row in rows:
+        key = semantic_text_key(row)
+        if key in {"similar_visible_volume", "both_participated", "visible_activity"}:
+            continue
+        if key in comparison_keys and key != "none":
+            continue
+        if key in seen:
+            continue
+        seen.add(key)
+        bullets.append(f"• {sanitize_label(row, fallback='', limit=220)}")
+        if len(bullets) >= limit:
+            break
+    return "\n".join(bullets)
+
+
+def format_participation_balance(result: dict[str, Any], participants: dict[str, Any], *, language: str) -> str:
+    participation = result.get("participation_interpretation") if isinstance(result.get("participation_interpretation"), dict) else {}
+    if participation.get("summary"):
+        return sanitize_label(participation.get("summary"), fallback="", limit=420)
+    balance = result.get("participation_balance") if isinstance(result.get("participation_balance"), dict) else {}
+    summary = sanitize_label(balance.get("summary"), fallback="", limit=300)
+    if summary:
+        return summary
+    you_patterns = participants.get("you", {}).get("observable_patterns") if isinstance(participants.get("you"), dict) else []
+    other_patterns = participants.get("other", {}).get("observable_patterns") if isinstance(participants.get("other"), dict) else []
+    you_keys = {semantic_text_key(str(item)) for item in (you_patterns if isinstance(you_patterns, list) else [])}
+    other_keys = {semantic_text_key(str(item)) for item in (other_patterns if isinstance(other_patterns, list) else [])}
+    if "similar_visible_volume" in you_keys & other_keys:
+        return t(language, "participation_balance_similar_volume_length")
+    return ""
+
+
+def semantic_text_key(text: str) -> str:
+    lowered = " ".join(text.casefold().split())
+    if any(fragment in lowered for fragment in ("no meaningful change", "существенных изменений нет", "нет значимых изменений", "похож на предыдущ")):
+        return "no_meaningful_change"
+    if any(fragment in lowered for fragment in ("recent rhythm looks similar", "недавний ритм похож")):
+        return "similar_recent_rhythm"
+    if any(fragment in lowered for fragment in ("both sides participated", "обе стороны участв")):
+        return "both_participated"
+    if any(fragment in lowered for fragment in ("messages were found", "activity exists", "visible activity", "видимая активность")):
+        return "visible_activity"
+    if any(fragment in lowered for fragment in ("similar visible message volume", "comparable visible message volume", "roughly balanced", "activity is balanced", "похожим видимым объемом", "сопоставимым видимым объемом", "примерно равномер", "примерно одинаков", "примерно сбаланс")):
+        return "similar_visible_volume"
+    if any(fragment in lowered for fragment in ("carries most visible", "несет большую часть")):
+        return "carries_volume"
+    if any(fragment in lowered for fragment in ("fewer visible", "меньшим количеством")):
+        return "fewer_messages"
+    if any(fragment in lowered for fragment in ("longer messages", "сообщения обычно подробнее", "длиннее")):
+        return "longer_messages"
+    return lowered[:80] if lowered else "none"
+
+
+META_FILLER_FRAGMENTS = (
+    "your visible communication style can be described",
+    "visible data show",
+    "visible metrics show",
+    "this section describes",
+    "there are several factors",
+    "communication contains certain patterns",
+    "the conversation contains a point of friction",
+    "видимый стиль общения можно описать",
+    "видимые данные показывают",
+    "видимые метрики показывают",
+    "этот раздел описывает",
+    "есть несколько факторов",
+    "переписка содержит определенные паттерны",
+    "в переписке есть заметная точка трения",
+)
+
+
+def is_meta_filler(text: str) -> bool:
+    lowered = " ".join(str(text or "").casefold().split())
+    return any(fragment in lowered for fragment in META_FILLER_FRAGMENTS)
+
+
+def format_score_explanation_compact(value: Any, *, language: str) -> str:
+    row = value if isinstance(value, dict) else {}
+    title = sanitize_label(row.get("title"), fallback="", limit=80)
+    negative = string_bullets(row.get("negative_contributors"), limit=3)
+    balance = sanitize_label(row.get("balance_note"), fallback="", limit=260)
+    cap = sanitize_label(row.get("semantic_mode_cap") or row.get("confidence_cap"), fallback="", limit=260)
+    body = "\n".join(item for item in [negative, balance, cap] if item)
+    if not title or not body:
+        return ""
+    return "\n".join([title, body]).strip()
+
+
+def format_score_explanation_full(value: Any, *, language: str) -> str:
+    row = value if isinstance(value, dict) else {}
+    title = sanitize_label(row.get("title"), fallback="", limit=100)
+    if not title:
+        return ""
+    lines = [title]
+    for section_key, values in [
+        ("score_positive_title", row.get("positive_contributors")),
+        ("score_negative_title", row.get("negative_contributors")),
+        ("score_unavailable_title", row.get("unavailable_dimensions")),
+    ]:
+        bullets = string_bullets(values, limit=4)
+        if bullets:
+            lines.extend(["", t(language, section_key), bullets])
+    for key in ("balance_note", "confidence_cap", "semantic_mode_cap", "historical_adjustment"):
+        text = sanitize_label(row.get(key), fallback="", limit=320)
+        if text:
+            lines.extend(["", text])
+    return "\n".join(lines).strip()
+
+
+def format_history_segments_compact(value: Any, *, language: str) -> str:
+    row = value if isinstance(value, dict) else {}
+    if not row.get("segmented"):
+        return ""
+    lines = [
+        sanitize_label(row.get("scope_note"), fallback="", limit=300),
+        sanitize_label(row.get("current_picture"), fallback="", limit=300),
+        sanitize_label(row.get("recent_change"), fallback="", limit=300),
+    ]
+    return "\n".join(item for item in lines if item).strip()
+
+
+def format_history_segments_full(value: Any, *, language: str) -> str:
+    row = value if isinstance(value, dict) else {}
+    if not row.get("segmented"):
+        return ""
+    lines = []
+    scope_note = sanitize_label(row.get("scope_note"), fallback="", limit=360)
+    if scope_note:
+        lines.extend([scope_note, ""])
+    for title_key, value_key in [
+        ("history_current_picture_title", "current_picture"),
+        ("history_long_term_pattern_title", "long_term_pattern"),
+        ("history_recent_change_title", "recent_change"),
+    ]:
+        text = sanitize_label(row.get(value_key), fallback="", limit=420)
+        if text:
+            lines.extend([t(language, title_key), text, ""])
+    window_count = int(row.get("window_count") or 0)
+    if window_count:
+        lines.append(t(language, "history_window_count", count=window_count))
+    return "\n".join(lines).strip()
 
 
 def direct_findings_bullets(values: Any, *, limit: int, language: str = "en") -> str:
@@ -1155,6 +1686,14 @@ def timeline_story_title(entry: TimelineStoryItem, *, chat: dict, language: str)
         "reminder_completed": t(language, "timeline_story_reminder_completed"),
         "reminder_dismissed": t(language, "timeline_story_reminder_dismissed"),
         "analysis_completed": t(language, "timeline_story_analysis"),
+        "semantic_sarcasm_playful": t(language, "timeline_story_semantic_sarcasm_playful"),
+        "semantic_sarcasm_dismissive": t(language, "timeline_story_semantic_sarcasm_dismissive"),
+        "semantic_sarcasm_changed": t(language, "timeline_story_semantic_sarcasm_changed"),
+        "semantic_aggression_visible": t(language, "timeline_story_semantic_aggression_visible"),
+        "semantic_pressure_pattern": t(language, "timeline_story_semantic_pressure_pattern"),
+        "semantic_influence_pattern": t(language, "timeline_story_semantic_influence_pattern"),
+        "semantic_persuasion_visible": t(language, "timeline_story_semantic_persuasion_visible"),
+        "semantic_possible_interest": t(language, "timeline_story_semantic_possible_interest"),
     }.get(entry.story_type, t(language, "timeline_story_event"))
 
 
@@ -1203,6 +1742,8 @@ def timeline_story_body(entry: TimelineStoryItem, *, chat: dict, language: str) 
             "timeline_story_analysis_body",
             period=timeline_period_adjective(sanitize_label(str(metadata.get("period_label") or ""), fallback=t(language, "not_available"), limit=40), language=language),
         )
+    if entry.story_type.startswith("semantic_"):
+        return sanitize_label(metadata.get("summary"), fallback=t(language, "timeline_story_semantic_body"), limit=300)
     return ""
 
 
@@ -1214,6 +1755,8 @@ def timeline_story_detail(entry: TimelineStoryItem, *, language: str) -> str:
         current = int(metadata.get("current_count") or 0)
         previous = int(metadata.get("previous_count") or 0)
         return t(language, "timeline_story_change_counts", current=current, previous=previous)
+    if entry.story_type.startswith("semantic_") and metadata.get("evidence_count"):
+        return t(language, "ai_evidence_count") + f": {int(metadata.get('evidence_count') or 0)}"
     return ""
 
 
@@ -1693,46 +2236,67 @@ def format_analysis_review(flow: dict) -> str:
     return "\n".join(lines)
 
 
-def format_job_progress(job: dict) -> str:
+def format_job_progress(job: dict, *, language: str = "en") -> str:
     status = sanitize_label(job.get("status"), fallback="queued")
     percent = int(job.get("progress_percent") or 0)
     count = int(job.get("imported_message_count") or 0)
     elapsed = job.get("elapsed_seconds")
     lines = [
-        "Analysis progress",
+        t(language, "job_progress_title"),
         "",
-        f"Chat: {sanitize_label(job.get('chat_title'), fallback='untitled')}",
-        f"Period: {sanitize_label(job.get('period_label'), fallback='unknown')}",
-        f"Status: {status}",
-        f"Progress: {percent}%",
-        f"Imported messages: {count}",
+        f"{t(language, 'job_progress_chat')}: {sanitize_label(job.get('chat_title'), fallback=t(language, 'chat_type_unknown'))}",
+        f"{t(language, 'analysis_result_period')}: {sanitize_label(job.get('period_label'), fallback=t(language, 'not_available'))}",
+        f"{t(language, 'job_progress_status')}: {job_status_label(status, language=language)}",
+        f"{t(language, 'job_progress_percent')}: {percent}%",
+        f"{t(language, 'job_progress_imported')}: {count}",
     ]
     if elapsed is not None:
-        lines.append(f"Elapsed: {human_duration(float(elapsed)) or '0s'}")
-    if job.get("error_reference"):
-        lines.append(f"Error reference: {sanitize_label(job.get('error_reference'), fallback='unknown')}")
+        lines.append(f"{t(language, 'job_progress_elapsed')}: {human_duration(float(elapsed)) or '0s'}")
+    if status == "retrying":
+        retry_attempt = min(3, int(job.get("retry_attempt_count") or 0) + 1)
+        lines.append(t(language, "job_progress_retrying_attempt", attempt=retry_attempt, total=3))
     return "\n".join(lines)
 
 
-def format_job_failure(job: dict) -> str:
-    reason = {
-        "no_messages": "No messages were found for the selected period.",
-        "flood_wait": "Telegram asked RelChat to wait before continuing.",
-        "auth_expired": "Telegram authorization appears to have expired.",
-        "network_unavailable": "Telegram is unreachable right now.",
-        "chat_inaccessible": "This chat was not accessible.",
-    }.get(str(job.get("error_message") or ""), "An internal error stopped the analysis.")
+def format_job_failure(job: dict, *, language: str = "en") -> str:
+    reason = failure_reason_text(str(job.get("error_message") or ""), language=language)
     lines = [
-        "Analysis failed",
+        t(language, "job_failed_title"),
         "",
-        f"Chat: {sanitize_label(job.get('chat_title'), fallback='untitled')}",
-        f"Reason: {reason}",
-        f"Imported messages before failure: {int(job.get('imported_message_count') or 0)}",
+        f"{t(language, 'job_progress_chat')}: {sanitize_label(job.get('chat_title'), fallback=t(language, 'chat_type_unknown'))}",
+        f"{t(language, 'job_failure_reason')}: {reason}",
+        f"{t(language, 'job_progress_imported')}: {int(job.get('imported_message_count') or 0)}",
     ]
-    if job.get("error_reference"):
-        lines.append(f"Error reference: {sanitize_label(job.get('error_reference'), fallback='unknown')}")
-    lines.append("You can retry this analysis or return to the main menu.")
+    lines.append(t(language, "job_failure_retry_hint"))
     return "\n".join(lines)
+
+
+def job_status_label(status: str, *, language: str) -> str:
+    key = f"job_status_{status}"
+    translated = t(language, key)
+    return translated if translated != key else sanitize_label(status.replace("_", " "), fallback=status)
+
+
+def failure_reason_text(category: str, *, language: str) -> str:
+    key = {
+        "no_messages": "failure_no_messages",
+        "flood_wait": "failure_telegram_rate_limit",
+        "auth_expired": "failure_telegram_auth",
+        "network_unavailable": "failure_network_dns",
+        "chat_inaccessible": "failure_chat_inaccessible",
+        "telegram_temporary": "failure_telegram_temporary_final",
+        "telegram_rate_limit": "failure_telegram_rate_limit",
+        "telegram_internal": "failure_telegram_temporary_final",
+        "telegram_auth": "failure_telegram_auth",
+        "network_dns": "failure_network_dns",
+        "provider_timeout": "failure_provider_timeout",
+        "provider_rate_limit": "failure_provider_rate_limit",
+        "provider_invalid_response": "failure_provider_invalid_response",
+        "database_locked": "failure_database_locked",
+        "validation_error": "failure_validation_error",
+        "cancelled": "failure_cancelled",
+    }.get(category, "failure_unknown")
+    return t(language, key)
 
 
 def format_reports_home(counts: dict[str, int]) -> str:

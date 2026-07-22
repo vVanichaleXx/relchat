@@ -49,6 +49,7 @@ The Bot API alone cannot read a user's private chat history. A bot can only rece
 
 See [docs/architecture.md](docs/architecture.md) for details.
 See [docs/scoring.md](docs/scoring.md) for context categories, evidence gates, and score caps.
+See [docs/analysis.md](docs/analysis.md) for observation-vs-interpretation rules, semantic analysis, memory, and timeline behavior.
 
 ## Setup
 
@@ -218,7 +219,36 @@ Before analysis, RelChat classifies the communication context as romantic, frien
 
 The selected context changes the language and framework. Work chats use efficiency, task ownership, clarity, commitments, and blocking language. Romantic chats use observable reciprocity, effort, directness, planning cooperation, and boundaries without attraction promises, pickup tactics, jealousy advice, or gender stereotypes. Family, friendship, customer/service, group, and channel contexts have their own observable frameworks. Groups and channels do not receive a two-person relationship score.
 
+Reports are personalized through a deterministic conversation fingerprint, not
+random template variation. RelChat first identifies what is distinctive about
+the selected chat and period, such as participant asymmetry, topic differences,
+recent changes, recurring validated findings, and safe aggregate comparisons.
+The report then selects a small number of high-value patterns and builds a
+story arc around them. Generic participation facts like “both sides
+participated” or equal message volume are informational only and are not treated
+as strengths by themselves.
+
+Advice is optional. If the user's current wording already looks clear or no
+actionable issue is supported, RelChat can omit a recommendation instead of
+giving generic advice. When advice is shown, it is linked to the strongest
+validated finding and the selected context, for example task clarity in a work
+chat or returning to a direct question after supported sarcasm.
+
 Scores are evidence-gated. Equal message volume is only activity balance; it does not prove interest, warmth, respectfulness, relationship health, or work effectiveness. Message-volume balance can contribute no more than 15% of the positive score. Missing dimensions do not become positive evidence, and unmeasured risks such as sarcasm or hostility remain unavailable instead of becoming `0.0`. Shallow local metrics are capped, deterministic metrics without text interpretation are capped, sampled AI coverage is capped, and low context confidence caps score confidence.
+
+RelChat uses a three-level interpretation model. Directly observed findings come from explicit wording or visible behavior. Strongly supported interpretations require several independent indicators or repeated comparable episodes. Unsupported or ambiguous areas stay marked as ambiguous, insufficient, or not applicable rather than becoming false zero scores. Sarcasm, aggression, pressure, persuasion, possible manipulation patterns, and possible personal interest are analyzed when evidence supports them, with confidence, alternatives, and limitations.
+
+Semantic findings also carry source and depth metadata. `explicit_rule` can support direct wording such as insults, threats, refusals, ultimatums, and explicit sarcasm markers. `local_pattern` is cautious and suggestive unless repeated independent signals support the same interpretation. `ai_interpretation` can evaluate contextual sarcasm, pressure, influence, dismissiveness, or possible interest only after consent and with the selected anonymized sample.
+
+Question metrics are normalized for long reports. RelChat filters URL query strings, code-like snippets, quoted text, forwarded text, repeated punctuation, and obvious rhetorical candidates before presenting direct-question rates. Large histories show counts with denominators and per-message rates instead of raw `?` totals.
+
+Full-history reports are segmented when the selected period is large, long, or has many visible sessions. The main result prioritizes the current picture, long-term baseline, and recent change so recent deterioration or improvement is not averaged away.
+
+Scores include a compact explanation of positive contributors, negative contributors, unavailable dimensions, and confidence or semantic-mode caps. Shallow local-only evidence is capped below the “good” verdict threshold, so balanced message volume alone cannot create a good or strong result.
+
+Advice is routed from validated finding types. Sarcasm receives sarcasm-specific advice, explicit aggression receives boundary advice, unanswered questions receive question advice, and work ambiguity receives task-clarity advice. The renderer omits generic “both participated” strengths and deduplicates symmetric participant observations into one participation-balance section.
+
+The result also includes a personal communication profile for the authenticated user in that chat and period, a short human communication story, and evidence-backed findings. “Why this conclusion?” explains what was observed, how it was interpreted, the evidence type, confidence, alternatives, and limitations. Long-term memory stores only recurring validated observations and safe aggregates, not raw messages or permanent personality labels. Timeline entries may show safe communication changes such as recurring pressure, dismissive sarcasm, repair, or possible-interest signals without turning them into certain relationship milestones.
 
 ## Period Comparison
 
@@ -270,6 +300,8 @@ The communication score is a 0-10 description of visible communication quality d
 AI output is validated as structured JSON before persistence or rendering. Malformed output, refusals, timeouts, rate limits, disabled AI, missing keys, or model/API failures are handled safely and local analysis remains available. Large histories are limited by `RELCHAT_AI_MAX_MESSAGES` and `RELCHAT_AI_MAX_CHARS`; local metrics still cover the selected imported period, while AI receives only the configured representative sample. Partial coverage is displayed instead of pretending the whole chat was sent to AI.
 
 Local-only analysis clearly states its limitation: it can see conversation structure, but it does not understand the meaning of every reply. It should remain neutral unless several supported dimensions justify a stronger conclusion.
+
+Analysis jobs persist granular states such as `loading_messages`, `analyzing_structure`, `analyzing_semantics`, `building_report`, `retrying`, `failed`, and `cancelled`. Transient Telegram, DNS, provider timeout/rate-limit, and database-lock failures are retried with bounded backoff under the same job identity. Permanent auth, validation, deleted-chat, or revoked-consent failures are not retried. Telethon clients are disconnected in `finally` blocks and analysis-owned background tasks are awaited during bot shutdown.
 
 ## Implemented Metrics
 

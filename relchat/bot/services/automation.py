@@ -9,6 +9,7 @@ from typing import Any
 
 from relchat.bot.formatters import format_automatic_analysis_result, format_automation_suggestion
 from relchat.bot.keyboards import automatic_analysis_result_keyboard, automation_suggestion_keyboard
+from relchat.bot.services.analysis_memory import persist_analysis_artifacts
 from relchat.bot.services.ai_analysis import AIAnalysisError, CONSENT_VERSION, run_ai_communication_analysis
 from relchat.bot.services.analysis_jobs import create_local_communication_analysis, safe_error_code
 from relchat.bot.services.context import classify_context
@@ -413,7 +414,19 @@ class AutomaticAnalysisService:
             text=format_automatic_analysis_result(row, analysis=analysis, ai_failed=ai_failed, language=language),
             reply_markup=automatic_analysis_result_keyboard(report["report_id"], source_notification_id=notification_id, language=language),
         )
-        record_ux_event(self.settings, "automatic_analysis_completed", payload={"mode": analysis_mode, "message_count": len(messages), "ai_failed": ai_failed})
+        result = (analysis.get("result") if isinstance(analysis, dict) else {}) or {}
+        record_ux_event(
+            self.settings,
+            "automatic_analysis_completed",
+            payload={
+                "mode": analysis_mode,
+                "message_count": len(messages),
+                "ai_failed": ai_failed,
+                "context_category": (result.get("context") or {}).get("category") if isinstance(result, dict) else None,
+                "analysis_framework_version": result.get("analysis_framework_version") if isinstance(result, dict) else None,
+                "semantic_finding_count": len(result.get("evidence_findings") or []) if isinstance(result, dict) else 0,
+            },
+        )
 
     async def run_ai_or_local_fallback(
         self,
@@ -461,6 +474,7 @@ class AutomaticAnalysisService:
                     consent_version=CONSENT_VERSION,
                     token_usage=outcome.token_usage,
                 )
+                persist_analysis_artifacts(conn, analysis=analysis, result=outcome.result)
                 conn.commit()
             return analysis, False
         except Exception as exc:

@@ -117,6 +117,10 @@ CREATE TABLE IF NOT EXISTS user_chats (
   unread_count INTEGER NOT NULL DEFAULT 0,
   is_saved INTEGER NOT NULL DEFAULT 0,
   is_favorite INTEGER NOT NULL DEFAULT 0,
+  is_pinned INTEGER NOT NULL DEFAULT 0,
+  recent_opened_at TEXT,
+  entity_kind TEXT,
+  normalized_title TEXT,
   recent_analyzed_at TEXT,
   last_report_id TEXT,
   confirmed_context_category TEXT,
@@ -172,6 +176,9 @@ CREATE TABLE IF NOT EXISTS analysis_jobs (
   progress_message_id INTEGER,
   analysis_mode TEXT NOT NULL DEFAULT 'local',
   ai_analysis_id TEXT,
+  retry_attempt_count INTEGER NOT NULL DEFAULT 0,
+  failure_category TEXT,
+  idempotency_key TEXT,
   created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
   updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
   started_at TEXT,
@@ -347,11 +354,128 @@ CREATE TABLE IF NOT EXISTS period_comparisons (
   created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
+CREATE TABLE IF NOT EXISTS communication_profile_snapshots (
+  profile_id TEXT PRIMARY KEY,
+  bot_user_id INTEGER NOT NULL,
+  source TEXT NOT NULL DEFAULT 'telegram',
+  chat_id TEXT NOT NULL,
+  analysis_id TEXT,
+  report_id TEXT,
+  profile_json TEXT NOT NULL DEFAULT '{}',
+  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS interpretation_findings (
+  finding_row_id TEXT PRIMARY KEY,
+  bot_user_id INTEGER NOT NULL,
+  source TEXT NOT NULL DEFAULT 'telegram',
+  chat_id TEXT NOT NULL,
+  analysis_id TEXT,
+  report_id TEXT,
+  finding_id TEXT NOT NULL,
+  finding_type TEXT NOT NULL,
+  confidence TEXT NOT NULL,
+  severity TEXT NOT NULL,
+  period_scope TEXT,
+  context_scope TEXT,
+  finding_json TEXT NOT NULL DEFAULT '{}',
+  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS interpretation_evidence_links (
+  evidence_row_id TEXT PRIMARY KEY,
+  finding_row_id TEXT NOT NULL,
+  bot_user_id INTEGER NOT NULL,
+  source TEXT NOT NULL DEFAULT 'telegram',
+  chat_id TEXT NOT NULL,
+  evidence_id TEXT,
+  evidence_type TEXT,
+  source_kind TEXT,
+  message_ref TEXT,
+  sender_ref TEXT,
+  description TEXT,
+  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS communication_memories (
+  memory_id TEXT PRIMARY KEY,
+  bot_user_id INTEGER NOT NULL,
+  source TEXT NOT NULL DEFAULT 'telegram',
+  chat_id TEXT NOT NULL,
+  memory_key TEXT NOT NULL,
+  category TEXT NOT NULL,
+  summary TEXT NOT NULL,
+  confidence TEXT NOT NULL,
+  evidence_count INTEGER NOT NULL DEFAULT 0,
+  occurrence_count INTEGER NOT NULL DEFAULT 0,
+  contradiction_count INTEGER NOT NULL DEFAULT 0,
+  active INTEGER NOT NULL DEFAULT 0,
+  metadata_json TEXT NOT NULL DEFAULT '{}',
+  first_seen_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  last_seen_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  UNIQUE(bot_user_id, source, chat_id, memory_key)
+);
+
+CREATE TABLE IF NOT EXISTS communication_timeline_events (
+  timeline_event_id TEXT PRIMARY KEY,
+  bot_user_id INTEGER NOT NULL,
+  source TEXT NOT NULL DEFAULT 'telegram',
+  chat_id TEXT NOT NULL,
+  analysis_id TEXT,
+  report_id TEXT,
+  event_type TEXT NOT NULL,
+  title TEXT,
+  confidence TEXT,
+  severity TEXT,
+  period_scope TEXT,
+  context_scope TEXT,
+  payload_json TEXT NOT NULL DEFAULT '{}',
+  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS analysis_framework_settings (
+  bot_user_id INTEGER NOT NULL,
+  source TEXT NOT NULL DEFAULT 'telegram',
+  chat_id TEXT NOT NULL,
+  framework_id TEXT NOT NULL,
+  enabled INTEGER NOT NULL DEFAULT 1,
+  settings_json TEXT NOT NULL DEFAULT '{}',
+  updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY(bot_user_id, source, chat_id, framework_id)
+);
+
+CREATE TABLE IF NOT EXISTS semantic_analysis_settings (
+  bot_user_id INTEGER PRIMARY KEY,
+  enabled INTEGER NOT NULL DEFAULT 1,
+  local_semantic_enabled INTEGER NOT NULL DEFAULT 1,
+  ai_semantic_enabled INTEGER NOT NULL DEFAULT 1,
+  updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS navigation_states (
+  bot_user_id INTEGER NOT NULL,
+  token TEXT NOT NULL,
+  screen_id TEXT NOT NULL,
+  previous_screen_id TEXT,
+  state_json TEXT NOT NULL DEFAULT '{}',
+  expires_at TEXT,
+  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY(bot_user_id, token)
+);
+
 CREATE INDEX IF NOT EXISTS idx_user_chats_user_saved
   ON user_chats(bot_user_id, is_saved, updated_at);
 
 CREATE INDEX IF NOT EXISTS idx_user_chats_user_favorite
   ON user_chats(bot_user_id, is_favorite, updated_at);
+
+CREATE INDEX IF NOT EXISTS idx_user_chats_user_pinned
+  ON user_chats(bot_user_id, is_pinned, recent_opened_at);
+
+CREATE INDEX IF NOT EXISTS idx_user_chats_user_type_title
+  ON user_chats(bot_user_id, chat_type, normalized_title);
 
 CREATE INDEX IF NOT EXISTS idx_dialog_folder_memberships_user_folder
   ON dialog_folder_memberships(bot_user_id, source, folder_id);
@@ -382,6 +506,24 @@ CREATE INDEX IF NOT EXISTS idx_pending_automatic_notifications_due
 
 CREATE INDEX IF NOT EXISTS idx_period_comparisons_user_chat
   ON period_comparisons(bot_user_id, source, chat_id, created_at);
+
+CREATE INDEX IF NOT EXISTS idx_profile_snapshots_user_chat
+  ON communication_profile_snapshots(bot_user_id, source, chat_id, created_at);
+
+CREATE INDEX IF NOT EXISTS idx_interpretation_findings_user_chat
+  ON interpretation_findings(bot_user_id, source, chat_id, created_at);
+
+CREATE INDEX IF NOT EXISTS idx_interpretation_evidence_user_chat
+  ON interpretation_evidence_links(bot_user_id, source, chat_id, created_at);
+
+CREATE INDEX IF NOT EXISTS idx_communication_memories_user_chat
+  ON communication_memories(bot_user_id, source, chat_id, active, updated_at);
+
+CREATE INDEX IF NOT EXISTS idx_communication_timeline_user_chat
+  ON communication_timeline_events(bot_user_id, source, chat_id, created_at);
+
+CREATE INDEX IF NOT EXISTS idx_navigation_states_user
+  ON navigation_states(bot_user_id, updated_at);
 """
 
 
@@ -415,6 +557,10 @@ def migrate_schema(conn: sqlite3.Connection) -> None:
     ensure_column(conn, "user_chats", "unread_count", "INTEGER NOT NULL DEFAULT 0")
     ensure_column(conn, "user_chats", "recent_analyzed_at", "TEXT")
     ensure_column(conn, "user_chats", "last_report_id", "TEXT")
+    ensure_column(conn, "user_chats", "is_pinned", "INTEGER NOT NULL DEFAULT 0")
+    ensure_column(conn, "user_chats", "recent_opened_at", "TEXT")
+    ensure_column(conn, "user_chats", "entity_kind", "TEXT")
+    ensure_column(conn, "user_chats", "normalized_title", "TEXT")
     ensure_column(conn, "user_chats", "confirmed_context_category", "TEXT")
     ensure_column(conn, "user_chats", "context_classification_source", "TEXT")
     ensure_column(conn, "user_chats", "context_classification_confidence", "TEXT")
@@ -436,7 +582,13 @@ def migrate_schema(conn: sqlite3.Connection) -> None:
     ensure_column(conn, "analysis_jobs", "elapsed_seconds", "INTEGER")
     ensure_column(conn, "analysis_jobs", "analysis_mode", "TEXT NOT NULL DEFAULT 'local'")
     ensure_column(conn, "analysis_jobs", "ai_analysis_id", "TEXT")
+    ensure_column(conn, "analysis_jobs", "retry_attempt_count", "INTEGER NOT NULL DEFAULT 0")
+    ensure_column(conn, "analysis_jobs", "failure_category", "TEXT")
+    ensure_column(conn, "analysis_jobs", "idempotency_key", "TEXT")
     conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_chats_source_chat ON chats(source, chat_id)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_user_chats_user_pinned ON user_chats(bot_user_id, is_pinned, recent_opened_at)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_user_chats_user_type_title ON user_chats(bot_user_id, chat_type, normalized_title)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_navigation_states_user ON navigation_states(bot_user_id, updated_at)")
     conn.execute(
         """
         CREATE UNIQUE INDEX IF NOT EXISTS idx_messages_source_chat_message

@@ -36,6 +36,48 @@ relchat/
                  Context classification, labels, and context-aware framework selection
   bot/services/period_comparison.py
                  Comparable-period rules and metric-specific comparison logic
+  bot/services/semantic_interpretation.py
+                 Three-level semantic interpretation for explicit/strongly supported/ambiguous findings
+  bot/services/canonical_findings.py
+                 Canonical validated finding model shared by score, advice, tone, memory, timeline, and evidence UI
+  bot/services/work_analysis.py
+                 Work-effectiveness findings and local work score policy
+  bot/services/report_consistency.py
+                 Final contradiction validator for score/finding/advice/report integrity
+  bot/services/analysis_frameworks.py
+                 Registry for extensible communication frameworks and future tutorial modules
+  bot/services/personal_profile.py
+                 Period-specific user communication profile and cross-chat aggregate profile
+  bot/services/story_builder.py
+                 Human-readable communication story assembled from validated evidence
+  bot/services/evidence_service.py
+                 “Why this conclusion?” panels from safe evidence metadata
+  bot/services/advice_routing.py
+                 Typed finding-to-advice mapping and validation
+  bot/services/question_metrics.py
+                 Filtered direct-question metrics with denominators
+  bot/services/history_segmentation.py
+                 Bounded long-history segmentation and recent-vs-baseline summaries
+  bot/services/conversation_fingerprint.py
+                 Deterministic selected-chat fingerprint for individualized reports
+  bot/services/pattern_selector.py
+                 Ranks distinctive evidence and filters generic repeated observations
+  bot/services/individualized_story.py
+                 Conversation-specific story arc built from selected patterns
+  bot/services/personalized_feedback.py
+                 Evidence-linked recommendation generation and advice omission
+  bot/services/specificity_validator.py
+                 Non-template report quality gate and safe genericness cleanup
+  bot/services/score_explanation.py
+                 User-facing score contributor and cap summaries
+  bot/services/retry_policy.py
+                 Safe failure classification and transient retry decisions
+  bot/services/telethon_lifecycle.py
+                 Owned Telethon/client task cleanup helpers
+  bot/services/analysis_memory.py
+                 Promotion and persistence orchestration for recurring validated observations
+  bot/services/communication_timeline.py
+                 Safe semantic timeline-event generation
   bot/services/automation.py
                  Optional important-chat scheduled polling and automatic analysis orchestration
   cli/           Developer/debug command-line interface
@@ -109,11 +151,12 @@ code.
 
 ### `memory/`
 
-Reserved for durable memory derived from events, user choices, and retention
-rules. Memory should be explicit and inspectable; it should not become a hidden
-cache of raw messages.
-
-No memory implementation is included yet.
+Reserved for source-agnostic durable memory contracts. Product UX v12 implements
+the current storage and promotion logic in `bot/services/analysis_memory.py`
+because it is tied to the bot-visible analysis result and SQLite repositories.
+Memory stores recurring validated observations, occurrence counts, contradiction
+counts, and active/inactive state. It must not store raw messages or permanent
+personality labels.
 
 ### `reports/`
 
@@ -155,6 +198,103 @@ count, text-message coverage, available dimensions, AI sample coverage,
 deterministic evidence count, period coverage, and context confidence. Equal
 message volume is capped as shallow evidence; unavailable dimensions must stay
 unavailable and must not inflate a score.
+
+Semantic interpretation uses a three-level model:
+
+- directly observed: explicit wording or visible behavior, such as an insult,
+  refusal, threat, direct invitation, or repeated command
+- strongly supported interpretation: several independent indicators or repeated
+  comparable sequences point to the same interpretation
+- unsupported or ambiguous: evidence is weak, contradictory, not applicable, or
+  insufficient
+
+Sarcasm, aggression, assertiveness, pressure, persuasion, possible manipulation
+patterns, and possible interest are not globally forbidden. They are available
+only when evidence supports them. The result model carries observation,
+interpretation, confidence, evidence count/type, alternatives, period scope,
+context scope, and limitations. Ambiguous dimensions stay ambiguous or
+insufficient instead of rendering false `0.0` risk scores.
+
+Product UX v12.1 adds semantic source routing:
+
+- `explicit_rule`: direct wording such as explicit insults, threats, refusals,
+  ultimatums, repeated urgent commands, or explicit sarcasm/irony markers
+- `local_pattern`: cautious local pattern evidence; wording stays suggestive
+  unless repeated independent signals support the same interpretation
+- `ai_interpretation`: contextual semantic interpretation after consent
+- `historical_pattern` and `combined`: reserved for memory and future combined
+  evidence flows
+
+Each semantic result also carries `semantic_depth` (`direct`, `suggestive`, or
+`contextual`). Memory promotion ignores weak suggestive local patterns, and
+score dimensions inherit the semantic source/depth that made them available.
+
+`question_metrics.py` replaces raw `?` totals in user-facing reports with
+filtered direct-question rates. It excludes URL query strings, code-like
+snippets, quoted/forwarded text, repeated punctuation, and rhetorical candidates
+before presenting counts with denominators and participant comparison.
+
+`history_segmentation.py` activates for large full-history selections, long date
+ranges, or many visible sessions. It builds bounded monthly or activity-based
+windows and surfaces current picture, long-term baseline, and recent change so
+the report does not average away current deterioration or improvement.
+
+`advice_routing.py` validates that each recommendation references a supported
+finding type and severity. Sarcasm advice, aggression boundary advice,
+unanswered-question advice, and work task-clarity advice are separate routes.
+The formatter also deduplicates symmetric participant facts into one
+participation-balance section and removes generic strengths such as “both sides
+participated.”
+
+Product UX v12.2 makes canonical validated findings the shared contract between
+score calculation, score explanations, advice, adaptive tone, long-term memory,
+timeline events, evidence panels, and report rendering. `canonical_findings.py`
+normalizes finding status, severity, semantic source/depth, score effect,
+advice category, evidence IDs, and memory eligibility. `report_consistency.py`
+is the final safety pass before output: it drops unsupported score contributors
+and advice, prevents serious tone from ambiguous local evidence, removes
+hostility/aggression/devaluation claims without matching findings, and
+deduplicates repeated conclusions.
+
+`work_analysis.py` adds work-effectiveness findings inside the existing
+analysis result. It focuses on task clarity, owner/deadline clarity, answer
+completion, repeated clarification, decisions, follow-through, status quality,
+response consistency, and tone impact on execution. Work scores are not
+relationship scores; balanced message volume is mostly informational.
+
+When AI analysis fails and local fallback is used, the fallback report is
+rebuilt from local canonical findings only. Partial or invalid AI-derived
+semantic claims are not preserved in local score contributors, advice, or tone.
+
+Product UX v12.3 adds a deterministic personalization layer without creating a
+parallel report flow. `conversation_fingerprint.py` builds a safe fingerprint
+from the same canonical findings, question metrics, long-history segments, and
+aggregate profile data that already feed the report. `pattern_selector.py`
+chooses a small set of distinctive observations and penalizes generic activity
+facts. `individualized_story.py` turns those selected patterns into the visible
+story arc, and `personalized_feedback.py` produces one tailored action or
+explicitly omits advice when no useful change is supported.
+
+`specificity_validator.py` runs after report consistency. It checks for generic
+filler, insufficient evidence-linked observations, duplicated semantic content,
+untethered advice, weak context relevance, and uncertainty mismatches. On
+failure it removes or rebuilds generic sections using validated findings only;
+it never invents chat-specific detail. This keeps AI and local reports on the
+same result object while making output specific to the selected chat and
+period.
+
+`analysis_frameworks.py` is the extension point for future tutorial and
+coaching modules. A framework declares `framework_id`, supported contexts,
+dimensions, evidence rules, interpretation rules, advice rules, forbidden
+actions, localization keys, and evaluation fixture tags. Future modules such as
+negotiation, boundary setting, flirting, leadership, sales, or conflict
+de-escalation should register a framework rather than editing one giant prompt.
+
+Personal profile, story, evidence, memory, and timeline services operate on the
+validated unified analysis result. They do not create a parallel report flow.
+Profile snapshots describe how the authenticated user communicated in a single
+chat/period. Cross-chat profile uses aggregate snapshots only and never exposes
+raw text from one chat inside another.
 
 `bot/services/period_comparison.py` compares only comparable periods for the same
 chat. It rejects weak comparisons when message counts are too low, duration is
@@ -282,10 +422,34 @@ Telegram Bot analysis mode
   -> deterministic dimensions and local score
   -> minimized normalized messages + local summaries + anonymous labels
   -> OpenAI Responses API structured JSON
-  -> schema validation, safety checks, privacy redaction
+  -> schema validation, semantic validation, safety checks, privacy redaction
+  -> local score calculation and evidence-quality caps
+  -> profile/story/evidence/memory/timeline artifact persistence
   -> SQLite communication analysis metadata/result
   -> relchat.bot privacy-safe formatting
 ```
+
+Analysis job reliability flow:
+
+```text
+analysis job
+  -> loading_messages
+  -> analyzing_structure
+  -> analyzing_semantics or building_report
+  -> completed
+```
+
+Transient failures such as Telegram temporary/internal errors, Telegram rate
+limits, DNS failures, provider timeouts/rate limits, and SQLite busy errors are
+classified and retried with bounded backoff under the same job identity and
+idempotency key. Permanent failures such as Telegram auth loss, revoked consent,
+validation errors, deleted/forbidden chats, and cancellation are not retried.
+Final failure messages are localized by category and never expose stack traces,
+IDs, exception class names, or exception text.
+
+Telethon lifecycle ownership is explicit: importers create a client, start it,
+and disconnect via `safe_disconnect` in `finally`. Bot shutdown stops automation
+and awaits analysis-owned task cancellation before the application exits.
 
 Optional important-chat automation flow:
 

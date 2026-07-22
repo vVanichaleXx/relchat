@@ -14,6 +14,7 @@ RelChat is designed to be local-first, source-agnostic, and user-controlled.
 - Optionally sends minimized selected-message data to OpenAI for AI-enhanced communication analysis, only after explicit bot consent and only when configured by environment variables.
 - Lets users mark chats as important and, only when explicitly enabled, monitor those chats for a cautious “appears to have paused” automation heuristic.
 - Classifies communication context before analysis and lets the user correct it per chat.
+- Stores evidence-backed interpretation findings, personal-profile snapshots, safe timeline events, and recurring observation memory without duplicating full transcripts.
 
 ## What The MVP Does Not Do
 
@@ -33,6 +34,8 @@ RelChat is designed to be local-first, source-agnostic, and user-controlled.
 - It does not infer romantic, work, family, or friendship context from gender, names, or stereotypes.
 - It does not treat equal message counts as proof of interest, respectfulness, relationship health, or work effectiveness.
 - It does not display unmeasured sarcasm, hostility, or dismissiveness as `0.0`.
+- It does not store raw message text inside long-term interpretation memory, timeline events, profile snapshots, or evidence links.
+- It does not present possible sarcasm, pressure, manipulation, or attraction as proven when the evidence is ambiguous.
 
 ## Local Storage
 
@@ -55,6 +58,30 @@ Important-chat automation stores per-user settings, message cursors, completed a
 
 Confirmed communication context is stored on the per-user chat record. It is scoped by `bot_user_id`, source, and chat, so one user cannot change another user’s category for the same Telegram chat.
 
+Product UX v12 adds structured interpretation artifacts:
+
+- `interpretation_findings`: validated observation/interpretation/advice records with confidence, evidence counts, scope, alternatives, and limitations.
+- `interpretation_evidence_links`: safe evidence metadata such as evidence type, anonymous sender role, and message marker; no message text.
+- `communication_profile_snapshots`: period-specific descriptions of how the authenticated user communicated in one chat.
+- `communication_memories`: recurring validated observations only, with occurrence and contradiction counters.
+- `communication_timeline_events`: safe semantic timeline entries such as pressure pattern, dismissive sarcasm, or possible-interest signals.
+
+All of these tables are scoped by `bot_user_id`, source, and chat where applicable.
+
+Product UX v12.1 adds no raw transcript duplication. It stores retry metadata on the existing analysis job row (`retry_attempt_count`, `failure_category`, and `idempotency_key`) and may audit safe aggregate fields such as attempt count, retry category, final status, fallback usage, segmentation window count, semantic source, and semantic confidence. It must not audit exception text, stack traces, message text, report bodies, participant identities, raw semantic examples, Telegram IDs, or provider prompts/responses.
+
+Long-history segmentation stores and renders aggregate windows only: message counts, participant counts, question rates, pause counts, and date ranges. Normalized question metrics filter URL query strings, code-like text, quotes, forwarded text, repeated punctuation, and rhetorical candidates before user-facing rates are shown.
+
+Product UX v12.3 adds conversation fingerprints, selected distinctive patterns,
+individualized story fields, personalized-feedback metadata, and specificity
+scores inside the existing structured analysis result. These are derived from
+the selected chat, validated findings, safe aggregate comparisons, and
+long-history windows. They do not store complete personalized prose as
+long-term memory, do not expose raw text from other chats, and do not rank
+people. UX audit may record counts and scores such as specificity score,
+distinctive finding count, duplicate count, advice generated/omitted, context,
+and evidence depth; it must not record report text or recommendation text.
+
 ## Telegram Bot Interface
 
 Bot Interface v0 is a private UI for local RelChat operations. It can show setup
@@ -72,10 +99,15 @@ analysis instead. Consent can be revoked in Settings.
 
 AI-enhanced communication analysis receives the confirmed or estimated context,
 anonymous participant labels, deterministic metrics, event summaries, selected
-period, coverage limits, and a bounded representative message sample. The prompt
-requires direct, context-aware, non-manipulative language and forbids diagnoses,
-hidden-feeling certainty, gender-based classification, pickup tactics, and
-clinical authority claims.
+period, coverage limits, filtered question aggregates, long-history segmentation metadata, and a bounded representative message sample. The prompt
+requires direct, context-aware, evidence-backed language. It may analyze
+sarcasm, aggression, pressure, persuasion, possible manipulation patterns,
+possible interest, and indirect meaning when supported. It must separate
+observation from interpretation, include confidence and alternatives, and still
+forbid diagnoses, hidden-feeling certainty, gender-based classification, pickup
+tactics, coercion, deception, and clinical authority claims.
+
+AI provider timeouts or invalid responses do not expose stack traces to users. If local messages are available, RelChat falls back to the local structural report and says that semantic analysis did not complete. Telegram authentication and forbidden/deleted-chat failures are treated as permanent until the user fixes access.
 
 UX audit logs record safe interaction metadata such as mode selection,
 started/completed/failed state, duration, and usage counts. They must not record

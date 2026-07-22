@@ -82,6 +82,11 @@ def entity_ref(value: str) -> int | str:
 
 def dialog_type(dialog: Any) -> str:
     if getattr(dialog, "is_user", False):
+        entity = getattr(dialog, "entity", None)
+        if getattr(entity, "bot", False):
+            return "bot"
+        if getattr(entity, "self", False):
+            return "self"
         return "one_to_one"
     if getattr(dialog, "is_group", False):
         return "group"
@@ -92,6 +97,10 @@ def dialog_type(dialog: Any) -> str:
 
 def entity_type(entity: Any) -> str:
     if hasattr(entity, "first_name") or hasattr(entity, "last_name"):
+        if getattr(entity, "bot", False):
+            return "bot"
+        if getattr(entity, "self", False):
+            return "self"
         return "one_to_one"
     if getattr(entity, "broadcast", False):
         return "channel"

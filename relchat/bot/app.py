@@ -39,8 +39,10 @@ def run_bot(settings: Settings | None = None) -> int:
 
     async def post_shutdown(application):
         from relchat.bot.services.automation import stop_automation_service
+        from relchat.bot.services.telethon_lifecycle import shutdown_analysis_tasks
 
         await stop_automation_service(application)
+        await shutdown_analysis_tasks(application)
 
     application = (
         ApplicationBuilder()

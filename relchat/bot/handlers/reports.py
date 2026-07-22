@@ -156,6 +156,14 @@ async def handle_report_action(update: Update, context: ContextTypes.DEFAULT_TYP
         )
         await edit_or_reply(update, text, reply_markup=analysis_result_keyboard(report_id, language=language))
         return
+    if action == "why":
+        text = (
+            format_ai_result_section(analysis, "why", language=language)
+            if analysis and analysis.get("status") == "completed"
+            else format_unified_analysis_result(report, language=language)
+        )
+        await edit_or_reply(update, text, reply_markup=analysis_detail_keyboard(report_id, language=language))
+        return
     if action == "sec":
         section = parts[4] if len(parts) >= 5 else "overview"
         await edit_or_reply(update, format_report_section(report, section), reply_markup=report_sections_keyboard(report, language=language))

@@ -6,6 +6,9 @@ from dataclasses import dataclass
 from typing import Any
 
 from relchat.bot.guided import normalize_search, parse_int
+from relchat.bot.services.chat_ranking import rank_chats
+from relchat.bot.services.chat_search import search_chats
+from relchat.bot.services.chat_types import chat_category
 from relchat.bot.services.ux_audit import record_ux_event
 from relchat.config import Settings
 from relchat.core.models import ConversationRef
@@ -50,7 +53,7 @@ class Page:
 
 
 def sort_conversations(conversations: list[ConversationRef]) -> list[ConversationRef]:
-    return sorted(conversations, key=lambda item: (1 if item.last_message_at else 0, item.last_message_at or ""), reverse=True)
+    return rank_chats(conversations)
 
 
 def filter_conversations(
@@ -65,17 +68,19 @@ def filter_conversations(
     if category == "all":
         return sort_conversations(conversations)
     if category == "private":
-        return filter_by_type(conversations, "one_to_one")
+        return rank_chats([item for item in conversations if chat_category(item) == "private"], category="private")
     if category == "groups":
-        return filter_by_type(conversations, "group")
+        return rank_chats([item for item in conversations if chat_category(item) == "groups"], category="groups")
     if category == "channels":
-        return filter_by_type(conversations, "channel")
+        return rank_chats([item for item in conversations if chat_category(item) == "channels"], category="channels")
+    if category == "bots":
+        return rank_chats([item for item in conversations if chat_category(item) == "bots"], category="bots")
     if category == "unread":
         return sort_conversations([item for item in conversations if item.unread_count > 0])
     if category == "favorites":
-        return sort_conversations([item for item in conversations if item.conversation_id in favorite_ids])
+        return rank_chats([item for item in conversations if item.conversation_id in favorite_ids])
     if category == "recent":
-        return sort_conversations([item for item in conversations if item.conversation_id in recent_ids])
+        return rank_chats([item for item in conversations if item.conversation_id in recent_ids])
     if category.startswith("folder:"):
         folder_id = parse_int(category.removeprefix("folder:"))
         if folder_id is None:
@@ -100,10 +105,7 @@ def filter_by_type(conversations: list[ConversationRef], conversation_type: str)
 
 
 def search_conversations(conversations: list[ConversationRef], query: str) -> list[ConversationRef]:
-    normalized = normalize_search(query)
-    if not normalized:
-        return []
-    return sort_conversations([item for item in conversations if normalized in conversation_search_text(item)])
+    return search_chats(conversations, query)
 
 
 def conversation_search_text(conversation: ConversationRef) -> str:

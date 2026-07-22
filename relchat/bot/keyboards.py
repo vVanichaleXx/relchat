@@ -252,6 +252,7 @@ def ai_detail_keyboard(*, language: str = "en"):
     return InlineKeyboardMarkup(
         [
             [InlineKeyboardButton(t(language, "button_compare_periods"), callback_data="rc:home:ai:comparison")],
+            [InlineKeyboardButton(t(language, "button_why_conclusion"), callback_data="rc:home:ai:why")],
             [
                 InlineKeyboardButton(t(language, "button_full_analysis"), callback_data="rc:home:ai:full"),
                 InlineKeyboardButton(t(language, "ai_advice_title"), callback_data="rc:home:ai:advice"),
@@ -295,6 +296,7 @@ def analysis_detail_keyboard(report_id: str, *, language: str = "en"):
     return InlineKeyboardMarkup(
         [
             [InlineKeyboardButton(t(language, "button_compare_periods"), callback_data=f"rc:rep:compare:{report_id}")],
+            [InlineKeyboardButton(t(language, "button_why_conclusion"), callback_data=f"rc:rep:why:{report_id}")],
             [
                 InlineKeyboardButton(t(language, "button_previous_period"), callback_data=f"rc:rep:prev:{report_id}"),
                 InlineKeyboardButton(t(language, "button_next_period"), callback_data=f"rc:rep:next:{report_id}"),
@@ -648,7 +650,7 @@ def job_progress_keyboard(job_id: str, *, can_cancel: bool = True, failed: bool 
 
     rows = []
     if can_cancel:
-        rows.append([InlineKeyboardButton("Cancel analysis", callback_data=f"rc:job:cancel:{job_id}")])
+        rows.append([InlineKeyboardButton(t(language, "button_cancel_analysis"), callback_data=f"rc:job:cancel:{job_id}")])
     if failed:
         rows.append([InlineKeyboardButton(t(language, "button_retry"), callback_data=f"rc:job:retry:{job_id}")])
     rows.append([InlineKeyboardButton(t(language, "button_main"), callback_data=CB_MAIN)])

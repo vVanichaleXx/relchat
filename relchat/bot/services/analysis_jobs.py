@@ -10,11 +10,13 @@ from typing import Any
 
 from relchat.bot.formatters import format_job_failure, format_job_progress, format_unified_analysis_result
 from relchat.bot.keyboards import analysis_result_keyboard, job_progress_keyboard
+from relchat.bot.services.analysis_memory import persist_analysis_artifacts
 from relchat.bot.services.ai_analysis import AIAnalysisError, CONSENT_VERSION, local_fallback_analysis, run_ai_communication_analysis
 from relchat.bot.services.context import ANALYSIS_FRAMEWORK_VERSION, classify_context
 from relchat.bot.services.period_comparison import compare_report_to_previous
 from relchat.bot.services.ux_audit import record_ux_event
 from relchat.bot.services.report_service import build_report
+from relchat.bot.services.retry_policy import classify_failure, retry_decision
 from relchat.bot.state import JOB_RUNNING_STATES
 from relchat.config import Settings
 from relchat.core.models import Message
@@ -67,13 +69,64 @@ def request_cancel(application: Any, settings: Settings, job_id: str) -> dict[st
 async def run_analysis_job(application: Any, settings: Settings, job_id: str) -> None:
     init_db(settings.db_path)
     started = time.monotonic()
+    max_attempts = 3
+    try:
+        for attempt in range(1, max_attempts + 1):
+            try:
+                await _run_analysis_job_once(application, settings, job_id, started=started)
+                return
+            except asyncio.CancelledError as exc:
+                await fail_job(application, settings, job_id, exc, elapsed_seconds=int(time.monotonic() - started), category="cancelled")
+                raise
+            except Exception as exc:
+                decision = retry_decision(exc, attempt=attempt, max_attempts=max_attempts, base_delay=0.25, jitter=0.1)
+                if decision.should_retry:
+                    with connect(settings.db_path) as conn:
+                        job = get_analysis_job(conn, job_id)
+                        if job is None:
+                            return
+                        language = get_user_settings(conn, job["bot_user_id"]).get("language", "en")
+                        update_analysis_job(
+                            conn,
+                            job_id,
+                            status="retrying",
+                            error_message=decision.category,
+                            failure_category=decision.category,
+                            retry_attempt_count=attempt,
+                            elapsed_seconds=int(time.monotonic() - started),
+                        )
+                        conn.commit()
+                        retrying_job = get_analysis_job(conn, job_id)
+                    record_ux_event(
+                        settings,
+                        "analysis_job_retrying",
+                        payload={
+                            "job_id": job_id,
+                            "attempt_count": attempt,
+                            "retry_reason_category": decision.category,
+                            "transient_failure": decision.transient,
+                        },
+                    )
+                    await edit_job_message(application, retrying_job, language=language)
+                    await asyncio.sleep(decision.delay_seconds)
+                    continue
+                await fail_job(application, settings, job_id, exc, elapsed_seconds=int(time.monotonic() - started), category=decision.category)
+                return
+    finally:
+        active_task_map(application).pop(job_id, None)
+        cancel_set(application).discard(job_id)
+
+
+async def _run_analysis_job_once(application: Any, settings: Settings, job_id: str, *, started: float | None = None) -> None:
+    init_db(settings.db_path)
+    started = time.monotonic() if started is None else started
     last_progress_edit = 0.0
     try:
         with connect(settings.db_path) as conn:
             job = get_analysis_job(conn, job_id)
             if job is None:
                 return
-            update_analysis_job(conn, job_id, status="loading", progress_percent=5, started=True)
+            update_analysis_job(conn, job_id, status="loading_messages", progress_percent=5, started=True)
             job = get_analysis_job(conn, job_id)
             user_settings = get_user_settings(conn, job["bot_user_id"])
             language = user_settings.get("language", "en")
@@ -84,7 +137,7 @@ async def run_analysis_job(application: Any, settings: Settings, job_id: str) ->
         conversation = await get_conversation(settings, job["chat_id"])
         with connect(settings.db_path) as conn:
             save_conversation(conn, conversation, selected=True)
-            update_analysis_job(conn, job_id, status="importing", progress_percent=10)
+            update_analysis_job(conn, job_id, status="loading_messages", progress_percent=10)
             job = get_analysis_job(conn, job_id)
             user_settings = get_user_settings(conn, job["bot_user_id"])
             language = user_settings.get("language", "en")
@@ -157,7 +210,7 @@ async def run_analysis_job(application: Any, settings: Settings, job_id: str) ->
             update_analysis_job(
                 conn,
                 job_id,
-                status="analyzing",
+                status="analyzing_structure",
                 progress_percent=85,
                 imported_message_count=count,
                 elapsed_seconds=int(time.monotonic() - started),
@@ -217,6 +270,14 @@ async def run_analysis_job(application: Any, settings: Settings, job_id: str) ->
                 range_end=range_end,
             )
             conn.commit()
+        with connect(settings.db_path) as conn:
+            update_analysis_job(conn, job_id, status="analyzing_semantics" if job.get("analysis_mode") == "ai" else "building_report", progress_percent=90, elapsed_seconds=int(time.monotonic() - started))
+            conn.commit()
+            job = get_analysis_job(conn, job_id)
+        if job is None:
+            return
+        if progress_enabled:
+            await edit_job_message(application, job, language=language)
         ai_analysis = None
         ai_failed = False
         if job.get("analysis_mode") == "ai":
@@ -277,11 +338,8 @@ async def run_analysis_job(application: Any, settings: Settings, job_id: str) ->
             ai_failed=ai_failed,
             chat_type=conversation.conversation_type,
         )
-    except Exception as exc:
-        await fail_job(application, settings, job_id, exc, elapsed_seconds=int(time.monotonic() - started))
-    finally:
-        active_task_map(application).pop(job_id, None)
-        cancel_set(application).discard(job_id)
+    except Exception:
+        raise
 
 
 def is_cancelled(application: Any, settings: Settings, job_id: str) -> bool:
@@ -292,7 +350,7 @@ def is_cancelled(application: Any, settings: Settings, job_id: str) -> bool:
         return bool(job and job["status"] == "cancelled")
 
 
-async def fail_job(application: Any, settings: Settings, job_id: str, exc: Exception, *, elapsed_seconds: int) -> None:
+async def fail_job(application: Any, settings: Settings, job_id: str, exc: BaseException, *, elapsed_seconds: int, category: str | None = None) -> None:
     init_db(settings.db_path)
     reference = error_reference()
     with connect(settings.db_path) as conn:
@@ -309,11 +367,22 @@ async def fail_job(application: Any, settings: Settings, job_id: str, exc: Excep
             status="failed",
             progress_percent=100,
             error_reference=reference,
-            error_message=safe_error_code(exc),
+            error_message=category or classify_failure(exc),
+            failure_category=category or classify_failure(exc),
             completed=True,
             elapsed_seconds=elapsed_seconds,
         )
         job = get_analysis_job(conn, job_id)
+    record_ux_event(
+        settings,
+        "analysis_job_failed",
+        payload={
+            "job_id": job_id,
+            "retry_reason_category": category or classify_failure(exc),
+            "final_status": "failed",
+            "transient_failure": category in {"telegram_temporary", "telegram_rate_limit", "telegram_internal", "network_dns", "provider_timeout", "provider_rate_limit", "database_locked"} if category else False,
+        },
+    )
     await edit_failure_message(application, job, language=language)
 
 
@@ -323,7 +392,7 @@ async def edit_job_message(application: Any, job: dict[str, Any] | None, *, lang
     await safe_edit(
         application,
         job,
-        format_job_progress(job),
+        format_job_progress(job, language=language),
         reply_markup=job_progress_keyboard(job["job_id"], can_cancel=True, language=language),
     )
 
@@ -389,6 +458,7 @@ async def run_optional_ai_analysis(
                 consent_version=CONSENT_VERSION,
                 token_usage=outcome.token_usage,
             )
+            persist_analysis_artifacts(conn, analysis=analysis, result=outcome.result)
             conn.commit()
         record_ux_event(
             settings,
@@ -401,6 +471,10 @@ async def run_optional_ai_analysis(
                 "char_count_sent": outcome.char_count_sent,
                 "token_usage": outcome.token_usage,
                 "score_produced": outcome.result.get("overall_score") is not None,
+                "context_category": (outcome.result.get("context") or {}).get("category"),
+                "analysis_framework_version": outcome.result.get("analysis_framework_version"),
+                "semantic_finding_count": len(outcome.result.get("evidence_findings") or []),
+                **analysis_specificity_audit_payload(outcome.result),
             },
         )
         return analysis, False
@@ -504,6 +578,7 @@ def create_local_communication_analysis(
             consent_version=None,
             token_usage={},
         )
+        persist_analysis_artifacts(conn, analysis=analysis, result=result)
         conn.commit()
     record_ux_event(
         settings,
@@ -514,9 +589,29 @@ def create_local_communication_analysis(
             "duration_seconds": int(time.monotonic() - started),
             "message_count": len(messages),
             "score_produced": result.get("overall_score") is not None,
+            "context_category": (result.get("context") or {}).get("category"),
+            "analysis_framework_version": result.get("analysis_framework_version"),
+            "semantic_finding_count": len(result.get("evidence_findings") or []),
+            **analysis_specificity_audit_payload(result),
         },
     )
     return analysis
+
+
+def analysis_specificity_audit_payload(result: dict[str, Any]) -> dict[str, Any]:
+    specificity = result.get("specificity") if isinstance(result.get("specificity"), dict) else {}
+    feedback = result.get("personalized_feedback") if isinstance(result.get("personalized_feedback"), dict) else {}
+    return {
+        "specificity_score": specificity.get("specificity_score"),
+        "distinctive_finding_count": specificity.get("distinctive_finding_count"),
+        "comparison_count": specificity.get("comparison_count"),
+        "duplicate_count": specificity.get("duplicate_count"),
+        "advice_generated": bool(result.get("advice")),
+        "advice_omitted_reason": "none" if result.get("advice") else str(feedback.get("omitted_reason") or "not_generated"),
+        "evidence_depth": specificity.get("evidence_depth"),
+        "report_rebuild_count": 1 if specificity and not specificity.get("passed") else 0,
+        "local_or_ai_mode": "ai" if int(((result.get("coverage") or {}).get("sent_messages") or 0)) > 0 else "local",
+    }
 
 
 def persist_report_comparison(
@@ -596,7 +691,7 @@ async def edit_failure_message(application: Any, job: dict[str, Any] | None, *, 
     await safe_edit(
         application,
         job,
-        format_job_failure(job),
+        format_job_failure(job, language=language),
         reply_markup=job_progress_keyboard(job["job_id"], can_cancel=False, failed=True, language=language),
     )
 

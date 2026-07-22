@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 import sqlite3
 import uuid
 from collections.abc import Iterable
@@ -8,6 +9,13 @@ from datetime import datetime, timezone
 from typing import Any
 
 from relchat.core.models import ConversationRef, DialogFolder, Message
+
+
+NORMALIZE_TITLE_RE = re.compile(r"\s+")
+
+
+def normalized_chat_title(value: str | None) -> str:
+    return NORMALIZE_TITLE_RE.sub(" ", (value or "").strip().casefold())
 
 
 def save_conversation(
@@ -401,6 +409,8 @@ def save_user_chat(
     existing = get_user_chat(conn, bot_user_id, conversation.source, conversation.conversation_id)
     is_saved = bool(existing.get("is_saved")) if existing else False
     is_favorite = bool(existing.get("is_favorite")) if existing else False
+    is_pinned = bool(existing.get("is_pinned")) if existing else False
+    recent_opened_at = existing.get("recent_opened_at") if existing else None
     local_title = existing.get("local_title") if existing else None
     if saved is not None:
         is_saved = saved
@@ -408,13 +418,15 @@ def save_user_chat(
         is_favorite = favorite
         if favorite:
             is_saved = True
+    title = conversation.title or ""
     conn.execute(
         """
         INSERT INTO user_chats(
           bot_user_id, source, chat_id, chat_type, display_title, local_title,
-          username, folder_id, last_message_at, unread_count, is_saved, is_favorite
+          username, folder_id, last_message_at, unread_count, is_saved, is_favorite,
+          is_pinned, recent_opened_at, entity_kind, normalized_title
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(bot_user_id, source, chat_id) DO UPDATE SET
           chat_type = excluded.chat_type,
           display_title = excluded.display_title,
@@ -425,6 +437,10 @@ def save_user_chat(
           unread_count = excluded.unread_count,
           is_saved = excluded.is_saved,
           is_favorite = excluded.is_favorite,
+          is_pinned = user_chats.is_pinned,
+          recent_opened_at = COALESCE(user_chats.recent_opened_at, excluded.recent_opened_at),
+          entity_kind = excluded.entity_kind,
+          normalized_title = excluded.normalized_title,
           updated_at = CURRENT_TIMESTAMP
         """,
         (
@@ -432,7 +448,7 @@ def save_user_chat(
             conversation.source,
             conversation.conversation_id,
             conversation.conversation_type,
-            conversation.title,
+            title,
             local_title,
             conversation.username,
             conversation.folder_id,
@@ -440,6 +456,10 @@ def save_user_chat(
             conversation.unread_count,
             1 if is_saved else 0,
             1 if is_favorite else 0,
+            1 if is_pinned else 0,
+            recent_opened_at,
+            conversation.conversation_type,
+            normalized_chat_title(local_title or title),
         ),
     )
 
@@ -472,11 +492,13 @@ def list_user_chats(
     order = "updated_at DESC"
     if section == "favorites":
         where.append("is_favorite = 1")
+    elif section == "pinned":
+        where.append("is_pinned = 1")
     elif section == "saved":
         where.append("is_saved = 1")
     elif section == "recent":
-        where.append("recent_analyzed_at IS NOT NULL")
-        order = "recent_analyzed_at DESC"
+        where.append("(recent_analyzed_at IS NOT NULL OR recent_opened_at IS NOT NULL)")
+        order = "COALESCE(recent_opened_at, recent_analyzed_at, updated_at) DESC"
     sql = f"SELECT * FROM user_chats WHERE {' AND '.join(where)} ORDER BY {order}"
     if limit is not None:
         sql += " LIMIT ?"
@@ -503,6 +525,176 @@ def list_cached_conversations(
         params.append(limit)
     rows = conn.execute(sql, params).fetchall()
     return [conversation_ref_from_user_chat(user_chat_from_row(row)) for row in rows]
+
+
+def list_user_chats_by_type(
+    conn: sqlite3.Connection,
+    bot_user_id: int,
+    *,
+    chat_types: Iterable[str],
+    limit: int | None = None,
+    offset: int = 0,
+    source: str = "telegram",
+) -> list[dict[str, Any]]:
+    types = [str(item) for item in chat_types]
+    if not types:
+        return []
+    placeholders = ", ".join("?" for _ in types)
+    params: list[Any] = [bot_user_id, source, *types]
+    sql = f"""
+        SELECT * FROM user_chats
+        WHERE bot_user_id = ? AND source = ? AND chat_type IN ({placeholders})
+        ORDER BY is_pinned DESC,
+                 is_favorite DESC,
+                 COALESCE(recent_analyzed_at, recent_opened_at, last_message_at, updated_at) DESC,
+                 COALESCE(local_title, display_title, '') COLLATE NOCASE ASC
+    """
+    if limit is not None:
+        sql += " LIMIT ? OFFSET ?"
+        params.extend([limit, max(0, int(offset))])
+    rows = conn.execute(sql, params).fetchall()
+    return [user_chat_from_row(row) for row in rows]
+
+
+def count_user_chats_by_type(
+    conn: sqlite3.Connection,
+    bot_user_id: int,
+    *,
+    chat_types: Iterable[str],
+    source: str = "telegram",
+) -> int:
+    types = [str(item) for item in chat_types]
+    if not types:
+        return 0
+    placeholders = ", ".join("?" for _ in types)
+    row = conn.execute(
+        f"""
+        SELECT COUNT(*) AS count FROM user_chats
+        WHERE bot_user_id = ? AND source = ? AND chat_type IN ({placeholders})
+        """,
+        [bot_user_id, source, *types],
+    ).fetchone()
+    return int(row["count"] if row else 0)
+
+
+def list_quick_access_chats(
+    conn: sqlite3.Connection,
+    bot_user_id: int,
+    *,
+    limit: int = 5,
+    source: str = "telegram",
+) -> list[dict[str, Any]]:
+    rows = conn.execute(
+        """
+        SELECT * FROM user_chats
+        WHERE bot_user_id = ?
+          AND source = ?
+          AND chat_type IN ('one_to_one', 'self')
+          AND (
+            is_pinned = 1
+            OR is_favorite = 1
+            OR recent_opened_at IS NOT NULL
+            OR recent_analyzed_at IS NOT NULL
+          )
+        ORDER BY is_pinned DESC,
+                 is_favorite DESC,
+                 COALESCE(recent_analyzed_at, recent_opened_at, last_message_at, updated_at) DESC,
+                 COALESCE(local_title, display_title, '') COLLATE NOCASE ASC
+        LIMIT ?
+        """,
+        (bot_user_id, source, max(0, int(limit))),
+    ).fetchall()
+    return [user_chat_from_row(row) for row in rows]
+
+
+def search_user_chats(
+    conn: sqlite3.Connection,
+    bot_user_id: int,
+    query: str,
+    *,
+    limit: int = 50,
+    source: str = "telegram",
+) -> list[dict[str, Any]]:
+    normalized = normalized_chat_title(query)
+    if not normalized:
+        return []
+    like = f"%{normalized}%"
+    rows = conn.execute(
+        """
+        SELECT * FROM user_chats
+        WHERE bot_user_id = ?
+          AND source = ?
+          AND COALESCE(normalized_title, LOWER(COALESCE(local_title, display_title, ''))) LIKE ?
+        ORDER BY
+          CASE
+            WHEN chat_type IN ('one_to_one', 'self') AND COALESCE(normalized_title, LOWER(COALESCE(local_title, display_title, ''))) = ? THEN 0
+            WHEN chat_type IN ('one_to_one', 'self') AND COALESCE(normalized_title, LOWER(COALESCE(local_title, display_title, ''))) LIKE ? THEN 1
+            WHEN chat_type IN ('one_to_one', 'self') THEN 2
+            WHEN chat_type IN ('group', 'supergroup', 'basic_group') THEN 3
+            WHEN chat_type = 'channel' THEN 4
+            WHEN chat_type = 'bot' THEN 5
+            ELSE 6
+          END ASC,
+          is_pinned DESC,
+          is_favorite DESC,
+          COALESCE(recent_analyzed_at, recent_opened_at, last_message_at, updated_at) DESC,
+          COALESCE(local_title, display_title, '') COLLATE NOCASE ASC
+        LIMIT ?
+        """,
+        (bot_user_id, source, like, normalized, f"{normalized}%", max(0, int(limit))),
+    ).fetchall()
+    return [user_chat_from_row(row) for row in rows]
+
+
+def save_navigation_state(
+    conn: sqlite3.Connection,
+    bot_user_id: int,
+    *,
+    token: str,
+    screen_id: str,
+    state: dict[str, Any],
+    previous_screen_id: str | None = None,
+    expires_at: str | None = None,
+) -> None:
+    conn.execute(
+        """
+        INSERT INTO navigation_states(bot_user_id, token, screen_id, previous_screen_id, state_json, expires_at)
+        VALUES (?, ?, ?, ?, ?, ?)
+        ON CONFLICT(bot_user_id, token) DO UPDATE SET
+          screen_id = excluded.screen_id,
+          previous_screen_id = excluded.previous_screen_id,
+          state_json = excluded.state_json,
+          expires_at = excluded.expires_at,
+          updated_at = CURRENT_TIMESTAMP
+        """,
+        (bot_user_id, token, screen_id, previous_screen_id, json_dumps(state), expires_at),
+    )
+
+
+def get_navigation_state(conn: sqlite3.Connection, bot_user_id: int, token: str) -> dict[str, Any] | None:
+    row = conn.execute(
+        """
+        SELECT * FROM navigation_states
+        WHERE bot_user_id = ? AND token = ?
+        """,
+        (bot_user_id, token),
+    ).fetchone()
+    if row is None:
+        return None
+    return {
+        "bot_user_id": int(row["bot_user_id"]),
+        "token": row["token"],
+        "screen_id": row["screen_id"],
+        "previous_screen_id": row["previous_screen_id"],
+        "state": json_loads(row["state_json"], {}),
+        "expires_at": row["expires_at"],
+        "created_at": row["created_at"],
+        "updated_at": row["updated_at"],
+    }
+
+
+def delete_navigation_states_for_user(conn: sqlite3.Connection, bot_user_id: int) -> None:
+    conn.execute("DELETE FROM navigation_states WHERE bot_user_id = ?", (bot_user_id,))
 
 
 def save_dialog_cache(
@@ -619,6 +811,39 @@ def set_user_chat_favorite(
     )
 
 
+def set_user_chat_pinned(
+    conn: sqlite3.Connection,
+    bot_user_id: int,
+    source: str,
+    chat_id: str,
+    pinned: bool,
+) -> None:
+    conn.execute(
+        """
+        UPDATE user_chats
+        SET is_pinned = ?, is_saved = CASE WHEN ? = 1 THEN 1 ELSE is_saved END, updated_at = CURRENT_TIMESTAMP
+        WHERE bot_user_id = ? AND source = ? AND chat_id = ?
+        """,
+        (1 if pinned else 0, 1 if pinned else 0, bot_user_id, source, chat_id),
+    )
+
+
+def mark_user_chat_opened(
+    conn: sqlite3.Connection,
+    bot_user_id: int,
+    source: str,
+    chat_id: str,
+) -> None:
+    conn.execute(
+        """
+        UPDATE user_chats
+        SET is_saved = 1, recent_opened_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP
+        WHERE bot_user_id = ? AND source = ? AND chat_id = ?
+        """,
+        (bot_user_id, source, chat_id),
+    )
+
+
 def rename_user_chat(
     conn: sqlite3.Connection,
     bot_user_id: int,
@@ -629,10 +854,10 @@ def rename_user_chat(
     conn.execute(
         """
         UPDATE user_chats
-        SET local_title = ?, updated_at = CURRENT_TIMESTAMP
+        SET local_title = ?, normalized_title = ?, updated_at = CURRENT_TIMESTAMP
         WHERE bot_user_id = ? AND source = ? AND chat_id = ?
         """,
-        (local_title, bot_user_id, source, chat_id),
+        (local_title, normalized_chat_title(local_title), bot_user_id, source, chat_id),
     )
 
 
@@ -741,6 +966,15 @@ def get_chat_context_classification(
 
 
 def remove_user_chat(conn: sqlite3.Connection, bot_user_id: int, source: str, chat_id: str) -> None:
+    delete_v12_chat_artifacts(conn, bot_user_id, source, chat_id)
+    conn.execute(
+        """
+        DELETE FROM navigation_states
+        WHERE bot_user_id = ?
+          AND state_json LIKE ?
+        """,
+        (bot_user_id, f'%"{chat_id}"%'),
+    )
     conn.execute(
         """
         DELETE FROM user_chats
@@ -808,6 +1042,10 @@ def user_chat_from_row(row: sqlite3.Row) -> dict[str, Any]:
         "unread_count": int(row["unread_count"] or 0),
         "is_saved": bool(row["is_saved"]),
         "is_favorite": bool(row["is_favorite"]),
+        "is_pinned": bool(row["is_pinned"] if "is_pinned" in keys else False),
+        "recent_opened_at": row["recent_opened_at"] if "recent_opened_at" in keys else None,
+        "entity_kind": row["entity_kind"] if "entity_kind" in keys else None,
+        "normalized_title": row["normalized_title"] if "normalized_title" in keys else normalized_chat_title(title),
         "recent_analyzed_at": row["recent_analyzed_at"],
         "last_report_id": row["last_report_id"],
         "confirmed_context_category": row["confirmed_context_category"] if "confirmed_context_category" in keys else None,
@@ -1571,9 +1809,9 @@ def create_analysis_job(
         INSERT INTO analysis_jobs(
           job_id, bot_user_id, source, chat_id, chat_title, period_id,
           period_label, period_start, period_end, modules, status,
-          progress_chat_id, progress_message_id, analysis_mode
+          progress_chat_id, progress_message_id, analysis_mode, idempotency_key
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'queued', ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'queued', ?, ?, ?, ?)
         """,
         (
             job_id,
@@ -1589,6 +1827,7 @@ def create_analysis_job(
             progress_chat_id,
             progress_message_id,
             analysis_mode,
+            f"{bot_user_id}:{source}:{chat_id}:{period_id}:{job_id}",
         ),
     )
     return get_analysis_job(conn, job_id) or {"job_id": job_id}
@@ -1637,6 +1876,9 @@ def update_analysis_job(
     error_message: str | None = None,
     report_id: str | None = None,
     ai_analysis_id: str | None = None,
+    retry_attempt_count: int | None = None,
+    failure_category: str | None = None,
+    idempotency_key: str | None = None,
     started: bool = False,
     completed: bool = False,
     elapsed_seconds: int | None = None,
@@ -1664,6 +1906,15 @@ def update_analysis_job(
     if ai_analysis_id is not None:
         assignments.append("ai_analysis_id = ?")
         params.append(ai_analysis_id)
+    if retry_attempt_count is not None:
+        assignments.append("retry_attempt_count = ?")
+        params.append(max(0, int(retry_attempt_count)))
+    if failure_category is not None:
+        assignments.append("failure_category = ?")
+        params.append(failure_category)
+    if idempotency_key is not None:
+        assignments.append("idempotency_key = ?")
+        params.append(idempotency_key)
     if started:
         assignments.append("started_at = COALESCE(started_at, CURRENT_TIMESTAMP)")
     if completed:
@@ -1686,10 +1937,11 @@ def mark_stale_running_jobs_failed(conn: sqlite3.Connection) -> int:
         SET status = 'failed',
             error_reference = COALESCE(error_reference, 'restart'),
             error_message = COALESCE(error_message, 'stale_after_restart'),
+            failure_category = COALESCE(failure_category, 'cancelled'),
             progress_percent = CASE WHEN progress_percent > 99 THEN 99 ELSE progress_percent END,
             completed_at = CURRENT_TIMESTAMP,
             updated_at = CURRENT_TIMESTAMP
-        WHERE status IN ('queued','loading','importing','analyzing')
+        WHERE status IN ('queued','loading','importing','analyzing','loading_messages','analyzing_structure','analyzing_semantics','building_report','retrying')
         """
     )
     return conn.total_changes - before
@@ -1722,6 +1974,9 @@ def analysis_job_from_row(row: sqlite3.Row) -> dict[str, Any]:
         "elapsed_seconds": row["elapsed_seconds"],
         "analysis_mode": row["analysis_mode"] if "analysis_mode" in row.keys() else "local",
         "ai_analysis_id": row["ai_analysis_id"] if "ai_analysis_id" in row.keys() else None,
+        "retry_attempt_count": int(row["retry_attempt_count"] or 0) if "retry_attempt_count" in row.keys() else 0,
+        "failure_category": row["failure_category"] if "failure_category" in row.keys() else None,
+        "idempotency_key": row["idempotency_key"] if "idempotency_key" in row.keys() else None,
     }
 
 
@@ -1942,7 +2197,7 @@ def has_running_ai_analysis(conn: sqlite3.Connection, bot_user_id: int, *, sourc
         SELECT 1 FROM analysis_jobs
         WHERE bot_user_id = ? AND source = ? AND chat_id = ?
           AND analysis_mode = 'ai'
-          AND status IN ('queued','loading','importing','analyzing')
+          AND status IN ('queued','loading','importing','analyzing','loading_messages','analyzing_structure','analyzing_semantics','building_report','retrying')
         LIMIT 1
         """,
         (bot_user_id, source, chat_id),
@@ -2073,6 +2328,7 @@ def set_report_favorite(conn: sqlite3.Connection, report_id: str, favorite: bool
 
 
 def delete_report(conn: sqlite3.Connection, report_id: str, bot_user_id: int) -> None:
+    delete_v12_report_artifacts(conn, bot_user_id, report_id)
     conn.execute(
         "DELETE FROM reports WHERE report_id = ? AND bot_user_id = ?",
         (report_id, bot_user_id),
@@ -2083,11 +2339,16 @@ def clear_reports(conn: sqlite3.Connection, bot_user_id: int) -> int:
     before = conn.total_changes
     conn.execute("DELETE FROM reports WHERE bot_user_id = ?", (bot_user_id,))
     conn.execute("DELETE FROM period_comparisons WHERE bot_user_id = ?", (bot_user_id,))
+    conn.execute("DELETE FROM communication_profile_snapshots WHERE bot_user_id = ?", (bot_user_id,))
+    conn.execute("DELETE FROM interpretation_evidence_links WHERE bot_user_id = ?", (bot_user_id,))
+    conn.execute("DELETE FROM interpretation_findings WHERE bot_user_id = ?", (bot_user_id,))
+    conn.execute("DELETE FROM communication_timeline_events WHERE bot_user_id = ?", (bot_user_id,))
     return conn.total_changes - before
 
 
 def delete_reports_for_chat(conn: sqlite3.Connection, bot_user_id: int, source: str, chat_id: str) -> int:
     before = conn.total_changes
+    delete_v12_chat_artifacts(conn, bot_user_id, source, chat_id)
     conn.execute(
         "DELETE FROM reports WHERE bot_user_id = ? AND source = ? AND chat_id = ?",
         (bot_user_id, source, chat_id),
@@ -2243,6 +2504,552 @@ def reminder_from_row(row: sqlite3.Row) -> dict[str, Any]:
     }
 
 
+def create_communication_profile_snapshot(
+    conn: sqlite3.Connection,
+    *,
+    bot_user_id: int,
+    source: str,
+    chat_id: str,
+    analysis_id: str | None,
+    report_id: str | None,
+    profile: dict[str, Any],
+) -> dict[str, Any]:
+    profile_id = new_id("prof")
+    conn.execute(
+        """
+        INSERT INTO communication_profile_snapshots(
+          profile_id, bot_user_id, source, chat_id, analysis_id, report_id, profile_json
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+        """,
+        (profile_id, bot_user_id, source, chat_id, analysis_id, report_id, json_dumps(profile)),
+    )
+    return {
+        "profile_id": profile_id,
+        "bot_user_id": bot_user_id,
+        "source": source,
+        "chat_id": chat_id,
+        "analysis_id": analysis_id,
+        "report_id": report_id,
+        "profile": profile,
+    }
+
+
+def list_communication_profile_snapshots(
+    conn: sqlite3.Connection,
+    bot_user_id: int,
+    *,
+    source: str | None = None,
+    chat_id: str | None = None,
+    limit: int = 20,
+) -> list[dict[str, Any]]:
+    where = ["bot_user_id = ?"]
+    params: list[Any] = [bot_user_id]
+    if source is not None:
+        where.append("source = ?")
+        params.append(source)
+    if chat_id is not None:
+        where.append("chat_id = ?")
+        params.append(chat_id)
+    params.append(limit)
+    rows = conn.execute(
+        f"""
+        SELECT * FROM communication_profile_snapshots
+        WHERE {' AND '.join(where)}
+        ORDER BY created_at DESC
+        LIMIT ?
+        """,
+        params,
+    ).fetchall()
+    return [communication_profile_snapshot_from_row(row) for row in rows]
+
+
+def communication_profile_snapshot_from_row(row: sqlite3.Row) -> dict[str, Any]:
+    return {
+        "profile_id": row["profile_id"],
+        "bot_user_id": int(row["bot_user_id"]),
+        "source": row["source"],
+        "chat_id": row["chat_id"],
+        "analysis_id": row["analysis_id"],
+        "report_id": row["report_id"],
+        "profile": json_loads(row["profile_json"], {}),
+        "created_at": row["created_at"],
+    }
+
+
+def create_interpretation_finding(
+    conn: sqlite3.Connection,
+    *,
+    bot_user_id: int,
+    source: str,
+    chat_id: str,
+    analysis_id: str | None,
+    report_id: str | None,
+    finding: dict[str, Any],
+) -> dict[str, Any]:
+    finding_row_id = new_id("find")
+    finding_id = str(finding.get("finding_id") or finding_row_id)
+    conn.execute(
+        """
+        INSERT INTO interpretation_findings(
+          finding_row_id, bot_user_id, source, chat_id, analysis_id, report_id,
+          finding_id, finding_type, confidence, severity, period_scope,
+          context_scope, finding_json
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            finding_row_id,
+            bot_user_id,
+            source,
+            chat_id,
+            analysis_id,
+            report_id,
+            finding_id,
+            str(finding.get("finding_type") or "general"),
+            str(finding.get("confidence") or "low"),
+            str(finding.get("severity") or "neutral"),
+            finding.get("period_scope"),
+            finding.get("context_scope"),
+            json_dumps(finding),
+        ),
+    )
+    for evidence in finding.get("evidence") or []:
+        if not isinstance(evidence, dict):
+            continue
+        conn.execute(
+            """
+            INSERT INTO interpretation_evidence_links(
+              evidence_row_id, finding_row_id, bot_user_id, source, chat_id,
+              evidence_id, evidence_type, source_kind, message_ref, sender_ref, description
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                new_id("ev"),
+                finding_row_id,
+                bot_user_id,
+                source,
+                chat_id,
+                evidence.get("evidence_id"),
+                evidence.get("evidence_type"),
+                evidence.get("source"),
+                evidence.get("message_ref"),
+                evidence.get("sender"),
+                evidence.get("description"),
+            ),
+        )
+    return {
+        "finding_row_id": finding_row_id,
+        "bot_user_id": bot_user_id,
+        "source": source,
+        "chat_id": chat_id,
+        "finding": finding,
+    }
+
+
+def list_interpretation_findings(
+    conn: sqlite3.Connection,
+    bot_user_id: int,
+    *,
+    source: str | None = None,
+    chat_id: str | None = None,
+    analysis_id: str | None = None,
+    report_id: str | None = None,
+    limit: int = 50,
+) -> list[dict[str, Any]]:
+    where = ["bot_user_id = ?"]
+    params: list[Any] = [bot_user_id]
+    if source is not None:
+        where.append("source = ?")
+        params.append(source)
+    if chat_id is not None:
+        where.append("chat_id = ?")
+        params.append(chat_id)
+    if analysis_id is not None:
+        where.append("analysis_id = ?")
+        params.append(analysis_id)
+    if report_id is not None:
+        where.append("report_id = ?")
+        params.append(report_id)
+    params.append(limit)
+    rows = conn.execute(
+        f"""
+        SELECT * FROM interpretation_findings
+        WHERE {' AND '.join(where)}
+        ORDER BY created_at DESC
+        LIMIT ?
+        """,
+        params,
+    ).fetchall()
+    return [interpretation_finding_from_row(row) for row in rows]
+
+
+def interpretation_finding_from_row(row: sqlite3.Row) -> dict[str, Any]:
+    return {
+        "finding_row_id": row["finding_row_id"],
+        "bot_user_id": int(row["bot_user_id"]),
+        "source": row["source"],
+        "chat_id": row["chat_id"],
+        "analysis_id": row["analysis_id"],
+        "report_id": row["report_id"],
+        "finding_id": row["finding_id"],
+        "finding_type": row["finding_type"],
+        "confidence": row["confidence"],
+        "severity": row["severity"],
+        "period_scope": row["period_scope"],
+        "context_scope": row["context_scope"],
+        "finding": json_loads(row["finding_json"], {}),
+        "created_at": row["created_at"],
+    }
+
+
+def get_communication_memory(
+    conn: sqlite3.Connection,
+    bot_user_id: int,
+    source: str,
+    chat_id: str,
+    memory_key: str,
+) -> dict[str, Any] | None:
+    row = conn.execute(
+        """
+        SELECT * FROM communication_memories
+        WHERE bot_user_id = ? AND source = ? AND chat_id = ? AND memory_key = ?
+        """,
+        (bot_user_id, source, chat_id, memory_key),
+    ).fetchone()
+    return communication_memory_from_row(row) if row is not None else None
+
+
+def upsert_communication_memory(
+    conn: sqlite3.Connection,
+    *,
+    bot_user_id: int,
+    source: str,
+    chat_id: str,
+    memory: dict[str, Any],
+) -> dict[str, Any]:
+    memory_id = str(memory.get("memory_id") or new_id("mem"))
+    conn.execute(
+        """
+        INSERT INTO communication_memories(
+          memory_id, bot_user_id, source, chat_id, memory_key, category, summary,
+          confidence, evidence_count, occurrence_count, contradiction_count,
+          active, metadata_json
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(bot_user_id, source, chat_id, memory_key) DO UPDATE SET
+          category = excluded.category,
+          summary = excluded.summary,
+          confidence = excluded.confidence,
+          evidence_count = excluded.evidence_count,
+          occurrence_count = excluded.occurrence_count,
+          contradiction_count = excluded.contradiction_count,
+          active = excluded.active,
+          metadata_json = excluded.metadata_json,
+          last_seen_at = CURRENT_TIMESTAMP,
+          updated_at = CURRENT_TIMESTAMP
+        """,
+        (
+            memory_id,
+            bot_user_id,
+            source,
+            chat_id,
+            str(memory.get("memory_key") or "general"),
+            str(memory.get("category") or "general"),
+            str(memory.get("summary") or ""),
+            str(memory.get("confidence") or "low"),
+            int(memory.get("evidence_count") or 0),
+            int(memory.get("occurrence_count") or 0),
+            int(memory.get("contradiction_count") or 0),
+            1 if memory.get("active") else 0,
+            json_dumps(memory.get("metadata") or {}),
+        ),
+    )
+    return get_communication_memory(conn, bot_user_id, source, chat_id, str(memory.get("memory_key") or "general")) or {"memory_id": memory_id}
+
+
+def list_communication_memories(
+    conn: sqlite3.Connection,
+    bot_user_id: int,
+    *,
+    source: str | None = None,
+    chat_id: str | None = None,
+    active_only: bool = False,
+    limit: int = 50,
+) -> list[dict[str, Any]]:
+    where = ["bot_user_id = ?"]
+    params: list[Any] = [bot_user_id]
+    if source is not None:
+        where.append("source = ?")
+        params.append(source)
+    if chat_id is not None:
+        where.append("chat_id = ?")
+        params.append(chat_id)
+    if active_only:
+        where.append("active = 1")
+    params.append(limit)
+    rows = conn.execute(
+        f"""
+        SELECT * FROM communication_memories
+        WHERE {' AND '.join(where)}
+        ORDER BY updated_at DESC
+        LIMIT ?
+        """,
+        params,
+    ).fetchall()
+    return [communication_memory_from_row(row) for row in rows]
+
+
+def communication_memory_from_row(row: sqlite3.Row) -> dict[str, Any]:
+    return {
+        "memory_id": row["memory_id"],
+        "bot_user_id": int(row["bot_user_id"]),
+        "source": row["source"],
+        "chat_id": row["chat_id"],
+        "memory_key": row["memory_key"],
+        "category": row["category"],
+        "summary": row["summary"],
+        "confidence": row["confidence"],
+        "evidence_count": int(row["evidence_count"] or 0),
+        "occurrence_count": int(row["occurrence_count"] or 0),
+        "contradiction_count": int(row["contradiction_count"] or 0),
+        "active": bool(row["active"]),
+        "metadata": json_loads(row["metadata_json"], {}),
+        "first_seen_at": row["first_seen_at"],
+        "last_seen_at": row["last_seen_at"],
+        "updated_at": row["updated_at"],
+    }
+
+
+def create_communication_timeline_event(
+    conn: sqlite3.Connection,
+    *,
+    bot_user_id: int,
+    source: str,
+    chat_id: str,
+    analysis_id: str | None,
+    report_id: str | None,
+    event: dict[str, Any],
+) -> dict[str, Any]:
+    timeline_event_id = new_id("tl")
+    conn.execute(
+        """
+        INSERT INTO communication_timeline_events(
+          timeline_event_id, bot_user_id, source, chat_id, analysis_id,
+          report_id, event_type, title, confidence, severity, period_scope,
+          context_scope, payload_json
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            timeline_event_id,
+            bot_user_id,
+            source,
+            chat_id,
+            analysis_id,
+            report_id,
+            str(event.get("event_type") or "semantic_event"),
+            event.get("title"),
+            event.get("confidence"),
+            event.get("severity"),
+            event.get("period_scope"),
+            event.get("context_scope"),
+            json_dumps(event),
+        ),
+    )
+    return {**event, "timeline_event_id": timeline_event_id}
+
+
+def list_communication_timeline_events(
+    conn: sqlite3.Connection,
+    bot_user_id: int,
+    *,
+    source: str | None = None,
+    chat_id: str | None = None,
+    limit: int = 100,
+) -> list[dict[str, Any]]:
+    where = ["bot_user_id = ?"]
+    params: list[Any] = [bot_user_id]
+    if source is not None:
+        where.append("source = ?")
+        params.append(source)
+    if chat_id is not None:
+        where.append("chat_id = ?")
+        params.append(chat_id)
+    params.append(limit)
+    rows = conn.execute(
+        f"""
+        SELECT * FROM communication_timeline_events
+        WHERE {' AND '.join(where)}
+        ORDER BY created_at DESC
+        LIMIT ?
+        """,
+        params,
+    ).fetchall()
+    return [communication_timeline_event_from_row(row) for row in rows]
+
+
+def communication_timeline_event_from_row(row: sqlite3.Row) -> dict[str, Any]:
+    payload = json_loads(row["payload_json"], {})
+    return {
+        **payload,
+        "timeline_event_id": row["timeline_event_id"],
+        "bot_user_id": int(row["bot_user_id"]),
+        "source": row["source"],
+        "chat_id": row["chat_id"],
+        "analysis_id": row["analysis_id"],
+        "report_id": row["report_id"],
+        "event_type": row["event_type"],
+        "title": row["title"] or payload.get("title"),
+        "confidence": row["confidence"] or payload.get("confidence"),
+        "severity": row["severity"] or payload.get("severity"),
+        "period_scope": row["period_scope"] or payload.get("period_scope"),
+        "context_scope": row["context_scope"] or payload.get("context_scope"),
+        "created_at": row["created_at"],
+    }
+
+
+def get_analysis_framework_setting(
+    conn: sqlite3.Connection,
+    bot_user_id: int,
+    source: str,
+    chat_id: str,
+    framework_id: str,
+) -> dict[str, Any] | None:
+    row = conn.execute(
+        """
+        SELECT * FROM analysis_framework_settings
+        WHERE bot_user_id = ? AND source = ? AND chat_id = ? AND framework_id = ?
+        """,
+        (bot_user_id, source, chat_id, framework_id),
+    ).fetchone()
+    if row is None:
+        return None
+    return {
+        "bot_user_id": int(row["bot_user_id"]),
+        "source": row["source"],
+        "chat_id": row["chat_id"],
+        "framework_id": row["framework_id"],
+        "enabled": bool(row["enabled"]),
+        "settings": json_loads(row["settings_json"], {}),
+        "updated_at": row["updated_at"],
+    }
+
+
+def set_analysis_framework_setting(
+    conn: sqlite3.Connection,
+    *,
+    bot_user_id: int,
+    source: str,
+    chat_id: str,
+    framework_id: str,
+    enabled: bool,
+    settings: dict[str, Any] | None = None,
+) -> None:
+    conn.execute(
+        """
+        INSERT INTO analysis_framework_settings(
+          bot_user_id, source, chat_id, framework_id, enabled, settings_json
+        )
+        VALUES (?, ?, ?, ?, ?, ?)
+        ON CONFLICT(bot_user_id, source, chat_id, framework_id) DO UPDATE SET
+          enabled = excluded.enabled,
+          settings_json = excluded.settings_json,
+          updated_at = CURRENT_TIMESTAMP
+        """,
+        (bot_user_id, source, chat_id, framework_id, 1 if enabled else 0, json_dumps(settings or {})),
+    )
+
+
+def get_semantic_analysis_settings(conn: sqlite3.Connection, bot_user_id: int) -> dict[str, Any]:
+    ensure_user_profile(conn, bot_user_id)
+    conn.execute(
+        """
+        INSERT INTO semantic_analysis_settings(bot_user_id)
+        VALUES (?)
+        ON CONFLICT(bot_user_id) DO NOTHING
+        """,
+        (bot_user_id,),
+    )
+    row = conn.execute(
+        "SELECT * FROM semantic_analysis_settings WHERE bot_user_id = ?",
+        (bot_user_id,),
+    ).fetchone()
+    return {
+        "bot_user_id": bot_user_id,
+        "enabled": bool(row["enabled"]),
+        "local_semantic_enabled": bool(row["local_semantic_enabled"]),
+        "ai_semantic_enabled": bool(row["ai_semantic_enabled"]),
+        "updated_at": row["updated_at"],
+    }
+
+
+def update_semantic_analysis_settings(conn: sqlite3.Connection, bot_user_id: int, **updates: Any) -> None:
+    allowed = {"enabled", "local_semantic_enabled", "ai_semantic_enabled"}
+    assignments = []
+    params: list[Any] = []
+    get_semantic_analysis_settings(conn, bot_user_id)
+    for key, value in updates.items():
+        if key not in allowed:
+            raise ValueError(f"Unknown semantic setting: {key}")
+        assignments.append(f"{key} = ?")
+        params.append(1 if value else 0)
+    if not assignments:
+        return
+    params.append(bot_user_id)
+    conn.execute(
+        f"""
+        UPDATE semantic_analysis_settings
+        SET {', '.join(assignments)}, updated_at = CURRENT_TIMESTAMP
+        WHERE bot_user_id = ?
+        """,
+        params,
+    )
+
+
+def delete_v12_report_artifacts(conn: sqlite3.Connection, bot_user_id: int, report_id: str) -> None:
+    finding_rows = conn.execute(
+        """
+        SELECT finding_row_id FROM interpretation_findings
+        WHERE bot_user_id = ? AND report_id = ?
+        """,
+        (bot_user_id, report_id),
+    ).fetchall()
+    finding_ids = [row["finding_row_id"] for row in finding_rows]
+    if finding_ids:
+        placeholders = ",".join("?" for _ in finding_ids)
+        conn.execute(
+            f"DELETE FROM interpretation_evidence_links WHERE bot_user_id = ? AND finding_row_id IN ({placeholders})",
+            [bot_user_id, *finding_ids],
+        )
+    conn.execute("DELETE FROM interpretation_findings WHERE bot_user_id = ? AND report_id = ?", (bot_user_id, report_id))
+    conn.execute("DELETE FROM communication_profile_snapshots WHERE bot_user_id = ? AND report_id = ?", (bot_user_id, report_id))
+    conn.execute("DELETE FROM communication_timeline_events WHERE bot_user_id = ? AND report_id = ?", (bot_user_id, report_id))
+
+
+def delete_v12_chat_artifacts(conn: sqlite3.Connection, bot_user_id: int, source: str, chat_id: str) -> None:
+    finding_rows = conn.execute(
+        """
+        SELECT finding_row_id FROM interpretation_findings
+        WHERE bot_user_id = ? AND source = ? AND chat_id = ?
+        """,
+        (bot_user_id, source, chat_id),
+    ).fetchall()
+    finding_ids = [row["finding_row_id"] for row in finding_rows]
+    if finding_ids:
+        placeholders = ",".join("?" for _ in finding_ids)
+        conn.execute(
+            f"DELETE FROM interpretation_evidence_links WHERE bot_user_id = ? AND finding_row_id IN ({placeholders})",
+            [bot_user_id, *finding_ids],
+        )
+    conn.execute("DELETE FROM interpretation_findings WHERE bot_user_id = ? AND source = ? AND chat_id = ?", (bot_user_id, source, chat_id))
+    conn.execute("DELETE FROM communication_profile_snapshots WHERE bot_user_id = ? AND source = ? AND chat_id = ?", (bot_user_id, source, chat_id))
+    conn.execute("DELETE FROM communication_memories WHERE bot_user_id = ? AND source = ? AND chat_id = ?", (bot_user_id, source, chat_id))
+    conn.execute("DELETE FROM communication_timeline_events WHERE bot_user_id = ? AND source = ? AND chat_id = ?", (bot_user_id, source, chat_id))
+    conn.execute("DELETE FROM analysis_framework_settings WHERE bot_user_id = ? AND source = ? AND chat_id = ?", (bot_user_id, source, chat_id))
+
+
 def dashboard_counts(conn: sqlite3.Connection, bot_user_id: int) -> dict[str, int]:
     saved = conn.execute(
         "SELECT COUNT(*) AS count FROM user_chats WHERE bot_user_id = ? AND is_saved = 1",
@@ -2255,7 +3062,7 @@ def dashboard_counts(conn: sqlite3.Connection, bot_user_id: int) -> dict[str, in
     running = conn.execute(
         """
         SELECT COUNT(*) AS count FROM analysis_jobs
-        WHERE bot_user_id = ? AND status IN ('queued','loading','importing','analyzing')
+        WHERE bot_user_id = ? AND status IN ('queued','loading','importing','analyzing','loading_messages','analyzing_structure','analyzing_semantics','building_report','retrying')
         """,
         (bot_user_id,),
     ).fetchone()["count"]
@@ -2312,6 +3119,14 @@ def delete_all_user_data(conn: sqlite3.Connection, bot_user_id: int) -> None:
     conn.execute("DELETE FROM automatic_analysis_ranges WHERE bot_user_id = ?", (bot_user_id,))
     conn.execute("DELETE FROM pending_automatic_notifications WHERE bot_user_id = ?", (bot_user_id,))
     conn.execute("DELETE FROM period_comparisons WHERE bot_user_id = ?", (bot_user_id,))
+    conn.execute("DELETE FROM communication_profile_snapshots WHERE bot_user_id = ?", (bot_user_id,))
+    conn.execute("DELETE FROM interpretation_evidence_links WHERE bot_user_id = ?", (bot_user_id,))
+    conn.execute("DELETE FROM interpretation_findings WHERE bot_user_id = ?", (bot_user_id,))
+    conn.execute("DELETE FROM communication_memories WHERE bot_user_id = ?", (bot_user_id,))
+    conn.execute("DELETE FROM communication_timeline_events WHERE bot_user_id = ?", (bot_user_id,))
+    conn.execute("DELETE FROM analysis_framework_settings WHERE bot_user_id = ?", (bot_user_id,))
+    conn.execute("DELETE FROM semantic_analysis_settings WHERE bot_user_id = ?", (bot_user_id,))
+    conn.execute("DELETE FROM navigation_states WHERE bot_user_id = ?", (bot_user_id,))
     conn.execute("DELETE FROM ai_consents WHERE bot_user_id = ?", (bot_user_id,))
     conn.execute("DELETE FROM user_settings WHERE bot_user_id = ?", (bot_user_id,))
     conn.execute("DELETE FROM bot_user_profiles WHERE bot_user_id = ?", (bot_user_id,))

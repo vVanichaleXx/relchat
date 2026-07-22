@@ -11,7 +11,17 @@ AWAITING_TEXT = "awaiting_text"
 RENAME_CHAT_TARGET = "rename_chat_target"
 EDIT_REMINDER_TARGET = "edit_reminder_target"
 
-JOB_RUNNING_STATES = {"queued", "loading", "importing", "analyzing"}
+JOB_RUNNING_STATES = {
+    "queued",
+    "loading",
+    "importing",
+    "analyzing",
+    "loading_messages",
+    "analyzing_structure",
+    "analyzing_semantics",
+    "building_report",
+    "retrying",
+}
 JOB_DONE_STATES = {"completed", "failed", "cancelled"}
 
 

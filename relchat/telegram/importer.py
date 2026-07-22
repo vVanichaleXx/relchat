@@ -7,6 +7,7 @@ from typing import Any
 
 from relchat.config import Settings
 from relchat.core.models import ConversationRef, DialogFolder, Message
+from relchat.bot.services.telethon_lifecycle import safe_disconnect
 from relchat.telegram.client import make_client
 from relchat.telegram.normalizer import entity_ref, normalize_dialog, normalize_entity, normalize_message
 
@@ -36,7 +37,7 @@ async def list_conversations(
                 dialogs = await collect_dialogs(client, limit=limit, folder=folder_id)
         return [normalize_dialog(dialog) for dialog in dialogs]
     finally:
-        await client.disconnect()
+        await safe_disconnect(client)
 
 
 async def load_conversation_catalog(settings: Settings, limit: int | None) -> ConversationCatalog:
@@ -54,7 +55,7 @@ async def load_conversation_catalog(settings: Settings, limit: int | None) -> Co
             folder_memberships=memberships,
         )
     finally:
-        await client.disconnect()
+        await safe_disconnect(client)
 
 
 async def list_dialog_folders(settings: Settings) -> list[DialogFolder]:
@@ -63,7 +64,7 @@ async def list_dialog_folders(settings: Settings) -> list[DialogFolder]:
     try:
         return normalize_dialog_folders(await load_dialog_filter_items(client))
     finally:
-        await client.disconnect()
+        await safe_disconnect(client)
 
 
 async def collect_dialogs(client: Any, *, limit: int | None, folder: int | None = None) -> list[Any]:
@@ -282,7 +283,7 @@ async def get_conversation(settings: Settings, conversation_id: str) -> Conversa
         entity = await client.get_entity(entity_ref(conversation_id))
         return normalize_entity(entity, conversation_id)
     finally:
-        await client.disconnect()
+        await safe_disconnect(client)
 
 
 async def iter_messages(
@@ -302,4 +303,4 @@ async def iter_messages(
             sender = await message.get_sender() if getattr(message, "sender_id", None) else None
             yield normalize_message(message, conversation_id, sender)
     finally:
-        await client.disconnect()
+        await safe_disconnect(client)

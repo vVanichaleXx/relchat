@@ -112,6 +112,7 @@ def build_relationship_timeline(
     messages: Sequence[Message],
     reports: Sequence[dict[str, Any]] = (),
     reminders: Sequence[dict[str, Any]] = (),
+    semantic_events: Sequence[dict[str, Any]] = (),
     chat_type: str | None = None,
     granularity: str = "week",
 ) -> RelationshipTimeline:
@@ -183,6 +184,7 @@ def build_relationship_timeline(
         messages=ordered_messages,
         reports=reports,
         reminders=reminders,
+        semantic_events=semantic_events,
         events=events,
         buckets=buckets,
         chat_type=chat_type or "one_to_one",
@@ -303,6 +305,7 @@ def build_story_items(
     messages: Sequence[Message],
     reports: Sequence[dict[str, Any]],
     reminders: Sequence[dict[str, Any]],
+    semantic_events: Sequence[dict[str, Any]],
     events: Sequence[ConversationEvent],
     buckets: Sequence[TimelineBucket],
     chat_type: str,
@@ -313,6 +316,7 @@ def build_story_items(
     items.extend(event_story_items(events))
     items.extend(reminder_story_items(reminders))
     items.extend(report_story_items(reports))
+    items.extend(semantic_story_items(semantic_events))
     items.extend(activity_change_story_items(buckets))
     return sorted(items, key=story_sort_key, reverse=True)
 
@@ -442,6 +446,32 @@ def report_story_items(reports: Sequence[dict[str, Any]]) -> list[TimelineStoryI
                 metadata={
                     "period_label": report.get("period_label"),
                     "message_count": int(report.get("imported_message_count") or 0),
+                },
+            )
+        )
+    return items
+
+
+def semantic_story_items(events: Sequence[dict[str, Any]]) -> list[TimelineStoryItem]:
+    items: list[TimelineStoryItem] = []
+    for event in events:
+        event_type = str(event.get("event_type") or "")
+        if not event_type.startswith("semantic_"):
+            continue
+        timestamp = str(event.get("created_at") or event.get("period_end") or event.get("period_scope") or "")
+        items.append(
+            TimelineStoryItem(
+                timestamp=timestamp,
+                story_type=event_type,
+                filter_tags=("activity", "semantics"),
+                confidence=str(event.get("confidence") or "low"),
+                metadata={
+                    "title": event.get("title"),
+                    "summary": event.get("summary"),
+                    "severity": event.get("severity"),
+                    "evidence_count": int(event.get("evidence_count") or 0),
+                    "period_scope": event.get("period_scope"),
+                    "context_scope": event.get("context_scope"),
                 },
             )
         )

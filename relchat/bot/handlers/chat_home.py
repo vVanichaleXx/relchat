@@ -53,6 +53,7 @@ from relchat.database.repositories import (
     get_user_settings,
     latest_ai_analysis_for_chat,
     list_analysis_jobs,
+    list_communication_timeline_events,
     list_messages,
     list_reminders,
     list_reports,
@@ -410,6 +411,13 @@ def load_timeline(update: Update, context: ContextTypes.DEFAULT_TYPE, chat: dict
         language = get_user_settings(conn, user_id).get("language", "en")
         messages = list_messages(conn, chat["chat_id"], source=chat.get("source") or "telegram")
         reports = list_reports(conn, user_id, chat_id=chat["chat_id"], limit=100)
+        semantic_events = list_communication_timeline_events(
+            conn,
+            user_id,
+            source=chat.get("source") or "telegram",
+            chat_id=chat["chat_id"],
+            limit=100,
+        )
         reminders = [
             item
             for item in list_reminders(conn, user_id, limit=1000)
@@ -419,6 +427,7 @@ def load_timeline(update: Update, context: ContextTypes.DEFAULT_TYPE, chat: dict
         messages=messages,
         reports=reports,
         reminders=reminders,
+        semantic_events=semantic_events,
         chat_type=chat.get("chat_type"),
         granularity=granularity,
     )
@@ -541,7 +550,7 @@ async def show_ai_analysis_section(update: Update, context: ContextTypes.DEFAULT
         if section == "overview"
         else format_ai_result_section(analysis, section, language=language)
     )
-    keyboard = ai_detail_keyboard(language=language) if section in {"full", "comparison"} else ai_result_keyboard(language=language)
+    keyboard = ai_detail_keyboard(language=language) if section in {"full", "comparison", "why"} else ai_result_keyboard(language=language)
     await edit_or_reply(update, text, reply_markup=keyboard)
 
 

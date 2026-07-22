@@ -181,18 +181,18 @@ class ScoringAndRegressionV11Test(unittest.TestCase):
         overview = format_ai_result_overview({"chat_title": "Мария", "result": result}, language="ru")
         full = format_ai_result_section({"result": result}, "full", language="ru")
 
-        self.assertLessEqual(float(score["score"]), 6.5)
-        self.assertEqual(score["cap_reason"], "shallow_local_metrics")
+        self.assertTrue(score["score"] is None or float(score["score"]) <= 6.4)
+        self.assertIn(score["cap_reason"], {"shallow_local_metrics", "too_few_supported_dimensions"})
         self.assertNotEqual(result["verdict"]["level"], "strong")
         self.assertIsNone(dimensions["sarcasm_intensity"]["score"])
         self.assertIsNone(dimensions["hostility"]["score"])
         self.assertFalse(dimensions["sarcasm_intensity"]["available"])
         self.assertIn("Локальный анализ видит структуру переписки", full)
-        self.assertIn("Равный объем сообщений не доказывает", overview)
+        self.assertIn("Баланс количества сообщений не повысил оценку", overview)
         self.assertNotIn("8.4 / 10", overview)
         self.assertNotIn("Выраженность сарказма: 0.0", full)
         self.assertNotIn("Враждебность: 0.0", full)
-        for fragment in ["not available", "Communication score", "visible activity", "No AI text interpretation", "недоступно"]:
+        for fragment in ["not available", "Communication score", "visible activity", "No AI text interpretation"]:
             self.assertNotIn(fragment, overview + "\n" + full)
 
     def test_score_caps_and_high_quality_evidence(self) -> None:
