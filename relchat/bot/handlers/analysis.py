@@ -19,6 +19,7 @@ from relchat.bot.formatters import (
     format_invalid_date_message,
     format_job_progress,
     format_module_selection,
+    format_search_prompt,
 )
 from relchat.bot.handlers.chat_home import show_chat_home
 from relchat.bot.handlers.common import (
@@ -49,6 +50,9 @@ from relchat.bot.services.chat_browser import (
     search_conversations,
     start_dialog_cache_refresh,
 )
+from relchat.bot.services.chat_types import category_title as localized_category_title
+from relchat.bot.services.native_navigation import clear_navigation_tokens, push_screen, register_nav_token, resolve_nav_token
+from relchat.bot.services.ux_audit import record_ux_event
 from relchat.bot.state import (
     ANALYSIS_FLOW,
     AWAITING_TEXT,
@@ -71,6 +75,7 @@ from relchat.database.repositories import (
     get_analysis_job,
     get_user_settings,
     has_active_ai_consent,
+    mark_user_chat_opened,
     save_user_chat,
 )
 from relchat.database.sqlite import connect, init_db
@@ -94,7 +99,14 @@ async def handle_analysis_callback(update: Update, context: ContextTypes.DEFAULT
     return False
 
 
-async def load_chat_browser(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+async def load_chat_browser(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+    *,
+    category: str = "private",
+    page: int = 0,
+    replace_navigation: bool = False,
+) -> None:
     try:
         settings = get_context_settings(context)
         language = get_language(update, context)
@@ -102,31 +114,37 @@ async def load_chat_browser(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         user_id = bot_user_id(update)
         cached = load_cached_browser_state(settings, user_id)
         if cached["conversations"]:
-            set_browser_state(context, cached, category="All chats")
+            set_browser_state(context, cached, category=category)
             maybe_start_dialog_refresh(context, settings, user_id)
-            await edit_or_reply(
-                update,
-                format_category_prompt(folder_count=len(cached["folders"])),
-                reply_markup=category_keyboard(cached["folders"], language=language),
+            get_browser(context)["page"] = max(0, int(page))
+            push_screen(context.user_data, f"chat_list:{category}", payload={"page": int(page)}, replace=replace_navigation)
+            record_ux_event(
+                settings,
+                "navigation_screen_opened",
+                payload={"screen_id": f"chat_list:{category}", "category_opened": category, "page_number": int(page)},
             )
+            await render_chat_page(update, context)
             return
         ensure_mtproto_ready(settings)
-        await edit_or_reply(update, "Loading chats...")
+        await edit_or_reply(update, t(language, "loading_chats"))
         refreshed = await refresh_dialog_cache(settings, user_id)
-        set_browser_state(context, refreshed, category="All chats")
-        await edit_or_reply(
-            update,
-            format_category_prompt(folder_count=len(refreshed["folders"])),
-            reply_markup=category_keyboard(refreshed["folders"], language=language),
+        set_browser_state(context, refreshed, category=category)
+        push_screen(context.user_data, f"chat_list:{category}", payload={"page": 0}, replace=replace_navigation)
+        record_ux_event(
+            settings,
+            "navigation_screen_opened",
+            payload={"screen_id": f"chat_list:{category}", "category_opened": category, "page_number": 0},
         )
+        await render_chat_page(update, context)
     except Exception as exc:
+        language = get_language(update, context)
         await edit_or_reply(
             update,
-            "Could not load chats. Check the local Telegram connection and try again.",
+            t(language, "loading_failed"),
             reply_markup=InlineKeyboardMarkup(
                 [
-                    [InlineKeyboardButton("Retry", callback_data="rc:nav:analyze")],
-                    [InlineKeyboardButton("Cancel", callback_data="rc:cancel")],
+                    [InlineKeyboardButton(t(language, "button_retry"), callback_data=f"rc:nav:{category}")],
+                    [InlineKeyboardButton(t(language, "nav_menu_button"), callback_data="rc:nav:main")],
                 ]
             ),
         )
@@ -139,9 +157,15 @@ def set_browser_state(
     category: str,
 ) -> None:
     conversations = list(state.get("conversations") or [])
+    filtered = filter_conversations(
+        conversations,
+        category,
+        favorite_ids=set(state.get("favorite_ids") or set()),
+        recent_ids=set(state.get("recent_ids") or set()),
+    )
     context.user_data[CHAT_BROWSER] = {
         "conversations": conversations,
-        "filtered": conversations,
+        "filtered": filtered,
         "folders": list(state.get("folders") or []),
         "folder_memberships": state.get("folder_memberships") or {},
         "category": category,
@@ -174,10 +198,16 @@ async def handle_browse_callback(update: Update, context: ContextTypes.DEFAULT_T
         browser.update(
             {
                 "filtered": filtered,
-                "category": category_title(category),
+                "category": category,
                 "page": 0,
                 "search_query": None,
             }
+        )
+        push_screen(context.user_data, f"chat_list:{category}", payload={"page": 0})
+        record_ux_event(
+            get_context_settings(context),
+            "navigation_screen_opened",
+            payload={"screen_id": f"chat_list:{category}", "category_opened": category, "page_number": 0},
         )
         await render_chat_page(update, context)
         return
@@ -192,6 +222,7 @@ async def handle_browse_callback(update: Update, context: ContextTypes.DEFAULT_T
             memberships=browser.get("folder_memberships") or {},
         )
         browser.update({"filtered": filtered, "category": folder_title(browser, str(folder_id)), "page": 0, "search_query": None})
+        push_screen(context.user_data, f"chat_list:folder", payload={"page": 0})
         await render_chat_page(update, context)
         return
     if len(parts) >= 4 and parts[2] == "page":
@@ -201,13 +232,20 @@ async def handle_browse_callback(update: Update, context: ContextTypes.DEFAULT_T
         elif parts[3] == "previous":
             page -= 1
         browser["page"] = page
+        current_category = str(browser.get("category") or "private")
+        push_screen(context.user_data, f"chat_list:{current_category}", payload={"page": page}, replace=True)
+        record_ux_event(
+            get_context_settings(context),
+            "navigation_page_changed",
+            payload={"screen_id": f"chat_list:{current_category}", "navigation_action": parts[3], "page_number": page},
+        )
         await render_chat_page(update, context)
         return
     if len(parts) >= 4 and parts[2] == "back":
         if parts[3] == "categories":
             await edit_or_reply(
                 update,
-                format_category_prompt(folder_count=len(browser.get("folders") or [])),
+                format_category_prompt(folder_count=len(browser.get("folders") or []), language=language),
                 reply_markup=category_keyboard(browser.get("folders") or [], language=language),
             )
         else:
@@ -215,12 +253,7 @@ async def handle_browse_callback(update: Update, context: ContextTypes.DEFAULT_T
             await render_chat_page(update, context)
         return
     if len(parts) >= 3 and parts[2] == "search":
-        context.user_data[AWAITING_TEXT] = "chat_search"
-        await edit_or_reply(
-            update,
-            "Search chat\n\nSend a display name, title, or username. Message contents are not searched.",
-            reply_markup=search_prompt_keyboard(language),
-        )
+        await show_chat_search_prompt(update, context)
         return
     if len(parts) >= 4 and parts[2] == "select":
         await select_chat(update, context, parts[3])
@@ -233,14 +266,31 @@ async def render_chat_page(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     page = paginate_conversations(browser["filtered"], int(browser.get("page") or 0), page_size=PAGE_SIZE)
     browser["page"] = page.page
     flow = get_flow(context.user_data)
+    user_id = bot_user_id(update)
+    clear_navigation_tokens(context.user_data)
+    item_tokens = [
+        register_nav_token(
+            context.user_data,
+            bot_user_id=user_id,
+            payload={"index": page.page * PAGE_SIZE + index, "source": item.source, "chat_id": item.conversation_id},
+            prefix="c",
+        )
+        for index, item in enumerate(page.items)
+    ]
+    title = str(browser.get("category") or "private")
+    if title in {"private", "groups", "channels", "bots", "favorites", "recent", "all", "search"}:
+        title = localized_category_title(title, language=language)
     await edit_or_reply(
         update,
         format_chat_page(
-            title=str(browser.get("category") or "Chats"),
+            title=title,
             first_item=page.first_item_number,
             last_item=page.last_item_number,
             total=page.total,
             search_query=browser.get("search_query"),
+            page=page.page,
+            page_size=PAGE_SIZE,
+            language=language,
         ),
         reply_markup=chat_list_keyboard(
             page.items,
@@ -250,26 +300,62 @@ async def render_chat_page(update: Update, context: ContextTypes.DEFAULT_TYPE) -
             has_next=page.has_next,
             selected_chat_id=flow.get("chat_id"),
             language=language,
+            item_tokens=item_tokens,
+            total=page.total,
+            native=True,
         ),
+    )
+    record_ux_event(
+        get_context_settings(context),
+        "navigation_list_rendered",
+        payload={
+            "screen_id": f"chat_list:{browser.get('category') or 'private'}",
+            "page_number": page.page,
+            "list_result_count": page.total,
+            "search_used": bool(browser.get("search_query")),
+        },
     )
 
 
+async def show_chat_search_prompt(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    language = get_language(update, context)
+    push_screen(context.user_data, "chat_search", payload={})
+    context.user_data[AWAITING_TEXT] = "chat_search"
+    record_ux_event(get_context_settings(context), "navigation_search_opened", payload={"screen_id": "chat_search", "search_used": True})
+    await edit_or_reply(update, format_search_prompt(language=language), reply_markup=search_prompt_keyboard(language))
+
+
 async def select_chat(update: Update, context: ContextTypes.DEFAULT_TYPE, value: str) -> None:
-    try:
-        index = int(value)
-    except ValueError:
-        await edit_or_reply(update, "Selected chat is no longer available.")
-        return
+    settings = get_context_settings(context)
+    user_id = bot_user_id(update)
+    payload = resolve_nav_token(context.user_data, bot_user_id=user_id, token=value)
+    if payload and "index" in payload:
+        index = int(payload.get("index") or 0)
+    else:
+        try:
+            index = int(value)
+        except ValueError:
+            await edit_or_reply(update, t(get_language(update, context), "nav_stale_menu"), reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton(t(get_language(update, context), "nav_menu_button"), callback_data="rc:nav:main")]]))
+            return
     browser = get_browser(context)
     conversations: list[ConversationRef] = browser.get("filtered") or []
     if index < 0 or index >= len(conversations):
-        await edit_or_reply(update, "Selected chat is no longer available. Choose it again.")
+        await edit_or_reply(update, t(get_language(update, context), "nav_stale_menu"), reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton(t(get_language(update, context), "nav_menu_button"), callback_data="rc:nav:main")]]))
         return
     conversation = conversations[index]
-    settings = get_context_settings(context)
-    user_id = bot_user_id(update)
     with connect(settings.db_path) as conn:
         save_user_chat(conn, user_id, conversation, saved=True)
+        mark_user_chat_opened(conn, user_id, conversation.source, conversation.conversation_id)
+    record_ux_event(
+        settings,
+        "chat_opened_from_navigation",
+        payload={
+            "screen_id": "chat_home",
+            "previous_screen_id": f"chat_list:{browser.get('category') or 'private'}",
+            "chat_type": conversation.conversation_type,
+            "path_length_to_analysis": len(context.user_data.get("native_navigation_stack") or []),
+        },
+    )
     await show_chat_home(
         update,
         context,
@@ -283,7 +369,8 @@ async def select_chat(update: Update, context: ContextTypes.DEFAULT_TYPE, value:
             "folder_id": conversation.folder_id,
             "unread_count": conversation.unread_count,
         },
-        parent={"kind": "browse"},
+        parent={"kind": "browse", "category": browser.get("category"), "page": browser.get("page")},
+        push_navigation=True,
     )
 
 
@@ -503,7 +590,8 @@ async def handle_analysis_text(update: Update, context: ContextTypes.DEFAULT_TYP
     if mode == "chat_search":
         browser = get_browser(context)
         results = search_conversations(browser.get("conversations") or [], text)
-        browser.update({"filtered": results, "category": "Search results", "search_query": text, "page": 0})
+        browser.update({"filtered": results, "category": "search", "search_query": text, "page": 0})
+        push_screen(context.user_data, "chat_list:search", payload={"page": 0})
         context.user_data[AWAITING_TEXT] = None
         await render_chat_page(update, context)
         return True

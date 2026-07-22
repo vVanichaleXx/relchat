@@ -41,6 +41,7 @@ from relchat.bot.keyboards import (
 from relchat.bot.localization import t
 from relchat.bot.services.chat_home_service import build_chat_home_view_model
 from relchat.bot.services.context import user_context_category
+from relchat.bot.services.native_navigation import pop_back, push_screen
 from relchat.bot.services.timeline_service import (
     build_relationship_timeline,
     paginate_timeline_story,
@@ -57,8 +58,11 @@ from relchat.database.repositories import (
     list_messages,
     list_reminders,
     list_reports,
+    mark_user_chat_opened,
     set_chat_important,
     set_chat_context_classification,
+    set_user_chat_favorite,
+    set_user_chat_pinned,
     update_important_chat_setting,
     update_user_setting,
 )
@@ -77,6 +81,7 @@ async def show_chat_home(
     chat: dict[str, Any],
     *,
     parent: dict[str, Any] | None = None,
+    push_navigation: bool = True,
 ) -> None:
     settings = get_context_settings(context)
     init_db(settings.db_path)
@@ -86,6 +91,7 @@ async def show_chat_home(
     if getattr(update, "callback_query", None) is not None:
         await edit_or_reply(update, format_chat_home_loading(language=language))
     with connect(settings.db_path) as conn:
+        mark_user_chat_opened(conn, user_id, chat.get("source") or "telegram", chat["chat_id"])
         reports = list_reports(conn, user_id, chat_id=chat["chat_id"], limit=2)
         latest_ai = latest_ai_analysis_for_chat(
             conn,
@@ -115,6 +121,8 @@ async def show_chat_home(
     context.user_data[CHAT_HOME_STATE] = chat_home_state(chat)
     if parent is not None:
         context.user_data[CHAT_HOME_PARENT] = parent
+    if push_navigation:
+        push_screen(context.user_data, "chat_home", payload={"chat": chat_home_state(chat)})
     await edit_or_reply(
         update,
         format_chat_home(view_model, language=language),
@@ -161,6 +169,12 @@ async def handle_chat_home_callback(update: Update, context: ContextTypes.DEFAUL
         return True
     if action == "important" and len(parts) >= 4 and parts[3] == "toggle":
         await toggle_important_chat(update, context)
+        return True
+    if action == "fav" and len(parts) >= 4 and parts[3] == "toggle":
+        await toggle_favorite_chat(update, context)
+        return True
+    if action == "pin" and len(parts) >= 4 and parts[3] == "toggle":
+        await toggle_pinned_chat(update, context)
         return True
     if action == "set":
         await handle_chat_setting_callback(update, context, parts)
@@ -240,6 +254,40 @@ async def toggle_important_chat(update: Update, context: ContextTypes.DEFAULT_TY
         format_chat_home(chat, language=language),
         reply_markup=chat_home_keyboard(chat, has_report=bool(chat.get("last_report_id")), language=language),
     )
+
+
+async def toggle_favorite_chat(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    chat = current_chat(context)
+    if chat is None:
+        await show_expired_navigation(update, context)
+        return
+    settings = get_context_settings(context)
+    user_id = bot_user_id(update)
+    source = chat.get("source") or "telegram"
+    updated_value = not bool(chat.get("is_favorite"))
+    with connect(settings.db_path) as conn:
+        language = get_user_settings(conn, user_id).get("language", "en")
+        set_user_chat_favorite(conn, user_id, source, chat["chat_id"], updated_value)
+    chat = {**chat, "is_favorite": updated_value, "is_saved": True}
+    context.user_data[CHAT_HOME_STATE] = chat_home_state(chat)
+    await edit_or_reply(update, format_chat_home_details_menu(language=language), reply_markup=chat_home_details_menu_keyboard(chat=chat, language=language))
+
+
+async def toggle_pinned_chat(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    chat = current_chat(context)
+    if chat is None:
+        await show_expired_navigation(update, context)
+        return
+    settings = get_context_settings(context)
+    user_id = bot_user_id(update)
+    source = chat.get("source") or "telegram"
+    updated_value = not bool(chat.get("is_pinned"))
+    with connect(settings.db_path) as conn:
+        language = get_user_settings(conn, user_id).get("language", "en")
+        set_user_chat_pinned(conn, user_id, source, chat["chat_id"], updated_value)
+    chat = {**chat, "is_pinned": updated_value, "is_saved": True}
+    context.user_data[CHAT_HOME_STATE] = chat_home_state(chat)
+    await edit_or_reply(update, format_chat_home_details_menu(language=language), reply_markup=chat_home_details_menu_keyboard(chat=chat, language=language))
 
 
 async def handle_chat_setting_callback(update: Update, context: ContextTypes.DEFAULT_TYPE, parts: list[str]) -> None:
@@ -455,7 +503,7 @@ async def show_chat_home_details(update: Update, context: ContextTypes.DEFAULT_T
     await edit_or_reply(
         update,
         format_chat_home_details_menu(language=language),
-        reply_markup=chat_home_details_menu_keyboard(language=language),
+        reply_markup=chat_home_details_menu_keyboard(chat=chat, language=language),
     )
 
 
@@ -604,12 +652,26 @@ async def start_analysis_from_chat_home(update: Update, context: ContextTypes.DE
     )
     await edit_or_reply(
         update,
-        format_period_prompt(chat_title=chat.get("title"), chat_type=chat.get("chat_type")),
+        format_period_prompt(chat_title=chat.get("title"), chat_type=chat.get("chat_type"), language=language),
         reply_markup=period_keyboard(language),
     )
 
 
 async def handle_chat_home_back(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    entry = pop_back(context.user_data)
+    if entry:
+        screen_id = str(entry.get("screen_id") or "")
+        payload = entry.get("payload") if isinstance(entry.get("payload"), dict) else {}
+        if screen_id.startswith("chat_list:"):
+            from relchat.bot.handlers.analysis import load_chat_browser
+
+            await load_chat_browser(update, context, category=screen_id.split(":", 1)[1], page=int(payload.get("page") or 0), replace_navigation=True)
+            return
+        if screen_id == "main_menu":
+            from relchat.bot.handlers.common import render_main_menu
+
+            await render_main_menu(update, context)
+            return
     parent = context.user_data.get(CHAT_HOME_PARENT)
     if isinstance(parent, dict):
         if parent.get("kind") == "my_chats":
@@ -634,7 +696,7 @@ async def show_expired_navigation(update: Update, context: ContextTypes.DEFAULT_
     settings = get_context_settings(context)
     with connect(settings.db_path) as conn:
         language = get_user_settings(conn, bot_user_id(update)).get("language", "en")
-    await edit_or_reply(update, t(language, "expired_navigation"), reply_markup=main_keyboard(language))
+    await edit_or_reply(update, t(language, "nav_stale_menu"), reply_markup=main_keyboard(language))
 
 
 def chat_home_state(chat: dict[str, Any]) -> dict[str, Any]:
@@ -647,6 +709,7 @@ def chat_home_state(chat: dict[str, Any]) -> dict[str, Any]:
         "local_title": chat.get("local_title"),
         "username": chat.get("username"),
         "is_favorite": bool(chat.get("is_favorite")),
+        "is_pinned": bool(chat.get("is_pinned")),
         "is_important": bool(chat.get("is_important")),
         "last_report_id": chat.get("last_report_id"),
         "confirmed_context_category": chat.get("confirmed_context_category"),

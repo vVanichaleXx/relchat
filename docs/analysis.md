@@ -218,6 +218,27 @@ Advice alignment is enforced with `leading_finding_id` and `advice_target_id`.
 The main recommendation must target the strongest actionable supported finding,
 or be omitted when no useful action is supported.
 
+## V13 Telegram Report Presentation
+
+Telegram reports have two levels. Compact results are meant to be readable in a
+short bot message. They show the chat title, one context/period metadata line,
+score or local-mode state, the distinctive story or strongest supported
+dynamic, the authenticated user's chat-specific pattern when supported, the
+other participant's visible response only when asymmetric evidence exists, one
+main friction or strength, one evidence-linked recommendation when useful, and
+data/limitations once near the end.
+
+Full analysis is opened from the compact result or Chat Home. It may include
+evidence panels, score explanation, topic differences, period comparison,
+history segmentation, memory, timeline, and limitations. The compact result
+should not automatically dump the full report after every analysis.
+
+Telegram formatting uses restrained hierarchy: bold titles and section
+headings, short italic metadata lines, short paragraphs, and restrained emojis.
+Navigation buttons may use icons for scanning; report body text should avoid an
+emoji wall. Do not repeat period, message count, or confidence in multiple
+sections. Do not render empty sections or technical metadata in the main report.
+
 ## Offline Evaluation Fixtures
 
 Reusable fixtures describe constraints instead of exact wording. They cover healthy friendship, playful sarcasm, dismissive sarcasm, explicit aggression, assertive disagreement, repeated pressure, legitimate persuasion, ambiguous manipulation, mutual possible romantic interest, one-sided romantic effort, work-task confusion, supportive family conversation, conflict repair, active but superficial communication, short insufficient-data chat, groups, and channels.

@@ -32,10 +32,12 @@ from relchat.database.repositories import (
     get_user_settings,
     list_important_chats,
     list_user_chats,
+    mark_user_chat_opened,
     remove_user_chat,
     rename_user_chat,
     set_chat_important,
     set_user_chat_favorite,
+    set_user_chat_pinned,
     update_important_chat_setting,
 )
 from relchat.database.sqlite import connect, init_db
@@ -135,6 +137,8 @@ async def handle_chat_action(update: Update, context: ContextTypes.DEFAULT_TYPE,
         language = get_user_settings(conn, user_id).get("language", "en")
 
     if action == "item":
+        with connect(settings.db_path) as conn:
+            mark_user_chat_opened(conn, user_id, chat["source"], chat["chat_id"])
         await show_chat_home(update, context, chat, parent={"kind": "my_chats", "section": context.user_data.get(CHAT_SECTION_STATE, "saved")})
         return
     if action == "analyze":
@@ -152,7 +156,7 @@ async def handle_chat_action(update: Update, context: ContextTypes.DEFAULT_TYPE,
             flow["modules"] = get_user_settings(conn, user_id).get("default_modules", [])
         await edit_or_reply(
             update,
-            format_period_prompt(chat_title=chat["title"], chat_type=chat["chat_type"]),
+            format_period_prompt(chat_title=chat["title"], chat_type=chat["chat_type"], language=language),
             reply_markup=period_keyboard(language),
         )
         return

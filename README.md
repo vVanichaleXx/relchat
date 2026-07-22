@@ -50,6 +50,7 @@ The Bot API alone cannot read a user's private chat history. A bot can only rece
 See [docs/architecture.md](docs/architecture.md) for details.
 See [docs/scoring.md](docs/scoring.md) for context categories, evidence gates, and score caps.
 See [docs/analysis.md](docs/analysis.md) for observation-vs-interpretation rules, semantic analysis, memory, and timeline behavior.
+See [docs/product-ux-v13.md](docs/product-ux-v13.md) for the Telegram navigation and report-presentation hierarchy.
 
 ## Setup
 
@@ -179,15 +180,24 @@ Normal bot flow:
 
 1. Open `/start`.
 2. Complete the short onboarding screens.
-3. Use the main menu:
+3. Start from the private-chat-first main menu:
 
 ```text
-Analyze a chat
-My chats
-Settings
+👤 Private chats
+⭐ Favorites
+🕘 Recent
+🔍 Find chat
+👥 Groups
+📢 Channels
+🤖 Bots
+⚙️ Settings
 ```
 
-The guided analysis flow lets a user browse Telegram folders/categories, search chats, choose a period, choose local or AI-enhanced analysis, and start a background import/analysis job. Reports, saved chats, favorites, settings, job metadata, reminders, AI consent, and AI analysis metadata are persisted in SQLite across bot restarts.
+Private one-to-one chats are the default discovery path so channels and large groups do not dominate the first screen. Frequently opened, pinned, favorite, or recently analyzed private chats may appear as a compact Quick access block. The guided analysis flow lets a user open a private chat in roughly three meaningful actions, search chats directly from the main menu, choose a period, choose local or AI-enhanced analysis, and start a background import/analysis job.
+
+Chat Home is intentionally compact. Primary actions stay visible there, while timeline, comparison, context correction, favorites, pins, automation settings, privacy, and deletion controls live under `⋯ More` or chat settings. Reports use a compact result by default and keep full analysis, evidence, comparison, score explanation, history, and limitations behind secondary buttons.
+
+Reports, saved chats, favorites, pinned chats, recent RelChat selections, settings, job metadata, reminders, AI consent, and AI analysis metadata are persisted in SQLite across bot restarts.
 
 Developer/debug commands remain available but are no longer required for normal use:
 

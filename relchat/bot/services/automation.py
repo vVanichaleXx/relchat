@@ -24,6 +24,7 @@ from relchat.database.repositories import (
     create_analysis_job,
     create_pending_automatic_notification,
     create_period_comparison,
+    ensure_report_callback_token,
     get_automation_state,
     get_important_chat_settings,
     get_pending_automatic_notification,
@@ -404,6 +405,7 @@ class AutomaticAnalysisService:
                 last_notification_at=now.isoformat(),
                 pending_new_message_count=0,
             )
+            callback_ref = ensure_report_callback_token(conn, bot_user_id, report["report_id"])
             if notification_id:
                 update_automatic_notification_status(conn, bot_user_id, notification_id, "completed")
             conn.commit()
@@ -412,7 +414,7 @@ class AutomaticAnalysisService:
         await self.application.bot.send_message(
             chat_id=bot_user_id,
             text=format_automatic_analysis_result(row, analysis=analysis, ai_failed=ai_failed, language=language),
-            reply_markup=automatic_analysis_result_keyboard(report["report_id"], source_notification_id=notification_id, language=language),
+            reply_markup=automatic_analysis_result_keyboard(callback_ref, source_notification_id=notification_id, language=language),
         )
         result = (analysis.get("result") if isinstance(analysis, dict) else {}) or {}
         record_ux_event(

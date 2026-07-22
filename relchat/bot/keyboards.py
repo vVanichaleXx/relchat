@@ -4,6 +4,7 @@ from collections.abc import Sequence
 
 from relchat.bot.formatters import clip_text, sanitize_label
 from relchat.bot.localization import LANGUAGES, t
+from relchat.bot.services.chat_types import chat_type_icon, primary_analysis_button_key
 from relchat.bot.state import ANALYSIS_MODULES, PERIOD_OPTIONS, RUNNABLE_MODULE_IDS
 from relchat.core.models import ConversationRef, DialogFolder
 
@@ -12,33 +13,53 @@ CB_MAIN = "rc:nav:main"
 CB_CANCEL = "rc:cancel"
 
 
-def main_keyboard(language: str = "en"):
+def main_keyboard(language: str = "en", quick_access: Sequence[tuple[str, str]] | None = None):
     from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 
-    return InlineKeyboardMarkup(
+    rows = []
+    for label, token in list(quick_access or [])[:5]:
+        rows.append([InlineKeyboardButton(label, callback_data=f"rc:quick:{token}")])
+    rows.extend(
         [
-            [InlineKeyboardButton(t(language, "button_analyze"), callback_data="rc:nav:analyze")],
-            [InlineKeyboardButton(t(language, "button_my_chats"), callback_data="rc:nav:chats")],
-            [InlineKeyboardButton(t(language, "button_settings"), callback_data="rc:nav:settings")],
+            [InlineKeyboardButton(t(language, "nav_private_chats_button"), callback_data="rc:nav:private")],
+            [
+                InlineKeyboardButton(t(language, "nav_favorites_button"), callback_data="rc:nav:favorites"),
+                InlineKeyboardButton(t(language, "nav_recent_button"), callback_data="rc:nav:recent"),
+            ],
+            [InlineKeyboardButton(t(language, "nav_search_button"), callback_data="rc:nav:search")],
+            [
+                InlineKeyboardButton(t(language, "nav_groups_button"), callback_data="rc:nav:groups"),
+                InlineKeyboardButton(t(language, "nav_channels_button"), callback_data="rc:nav:channels"),
+            ],
+            [
+                InlineKeyboardButton(t(language, "nav_bots_button"), callback_data="rc:nav:bots"),
+                InlineKeyboardButton(t(language, "nav_settings_button"), callback_data="rc:nav:settings"),
+            ],
         ]
+    )
+    return InlineKeyboardMarkup(
+        rows
     )
 
 
 def back_main_keyboard(language: str = "en"):
     from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 
-    return InlineKeyboardMarkup([[InlineKeyboardButton(t(language, "button_main"), callback_data=CB_MAIN)]])
+    return InlineKeyboardMarkup([[InlineKeyboardButton(t(language, "nav_main_button"), callback_data=CB_MAIN)]])
 
 
 def onboarding_keyboard(step: int, *, connected: bool, language: str = "en"):
     from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 
     if step < 3:
-        return InlineKeyboardMarkup([[InlineKeyboardButton("Continue", callback_data=f"rc:onb:{step + 1}")]])
+        return InlineKeyboardMarkup([[InlineKeyboardButton(t(language, "button_continue"), callback_data=f"rc:onb:{step + 1}")]])
     rows = []
     if not connected:
-        rows.append([InlineKeyboardButton("Check again", callback_data="rc:onb:3")])
-    rows.append([InlineKeyboardButton("Continue to RelChat", callback_data="rc:onb:done")])
+        rows.append([InlineKeyboardButton(t(language, "button_check_again"), callback_data="rc:onb:3")])
+    if connected:
+        rows.append([InlineKeyboardButton(t(language, "nav_private_chats_button"), callback_data="rc:nav:private")])
+        rows.append([InlineKeyboardButton(t(language, "nav_search_button"), callback_data="rc:nav:search")])
+    rows.append([InlineKeyboardButton(t(language, "nav_main_button"), callback_data="rc:onb:done")])
     return InlineKeyboardMarkup(rows)
 
 
@@ -141,26 +162,39 @@ def chat_home_keyboard(chat: dict, *, has_report: bool, running: bool = False, l
     from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 
     rows = []
-    rows.extend(primary_chat_home_actions(has_report=has_report, running=running, language=language))
-    important_label = t(language, "important_remove") if chat.get("is_important") else t(language, "important_mark")
-    rows.append([InlineKeyboardButton(important_label, callback_data="rc:home:important:toggle")])
-    rows.append([InlineKeyboardButton(t(language, "button_details"), callback_data="rc:home:details")])
+    rows.extend(primary_chat_home_actions(chat=chat, has_report=has_report, running=running, language=language))
+    if has_report:
+        rows.append(
+            [
+                InlineKeyboardButton(t(language, "nav_chat_history_button"), callback_data="rc:home:sec:timeline"),
+                InlineKeyboardButton(t(language, "button_compare_periods"), callback_data="rc:home:ai:comparison"),
+            ]
+        )
     rows.append(
         [
-            InlineKeyboardButton(t(language, "button_back"), callback_data="rc:home:back"),
-            InlineKeyboardButton(t(language, "button_main"), callback_data=CB_MAIN),
+            InlineKeyboardButton(t(language, "button_why_conclusion"), callback_data="rc:home:ai:why"),
+            InlineKeyboardButton(t(language, "nav_more_button"), callback_data="rc:home:details"),
+        ]
+    )
+    rows.append(
+        [
+            InlineKeyboardButton(t(language, "nav_back_to_chats_button"), callback_data="rc:home:back"),
+            InlineKeyboardButton(t(language, "nav_menu_button"), callback_data=CB_MAIN),
         ]
     )
     return InlineKeyboardMarkup(rows)
 
 
-def primary_chat_home_actions(*, has_report: bool, running: bool, language: str):
+def primary_chat_home_actions(*, chat: dict | None = None, has_report: bool, running: bool, language: str):
     from telegram import InlineKeyboardButton
 
     if running:
         return [[InlineKeyboardButton(t(language, "main_running"), callback_data="rc:noop")]]
-    label = t(language, "button_update_analysis") if has_report else t(language, "button_run_analysis")
-    return [[InlineKeyboardButton(f"▶ {label}", callback_data="rc:home:run")]]
+    chat = chat or {}
+    label = t(language, primary_analysis_button_key(chat.get("chat_type"), chat.get("confirmed_context_category") or chat.get("analysis_context_used")))
+    if has_report:
+        label = t(language, "nav_update_analysis_button", action=label)
+    return [[InlineKeyboardButton(label, callback_data="rc:home:run")]]
 
 
 def secondary_chat_home_actions(*, language: str):
@@ -190,14 +224,18 @@ def utility_chat_home_actions(*, language: str):
     ]
 
 
-def chat_home_details_menu_keyboard(*, language: str = "en"):
+def chat_home_details_menu_keyboard(*, chat: dict | None = None, language: str = "en"):
     from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 
+    chat = chat or {}
+    important_label = t(language, "important_remove") if chat.get("is_important") else t(language, "important_mark")
+    favorite_label = t(language, "button_unfavorite") if chat.get("is_favorite") else t(language, "button_favorite")
+    pin_label = t(language, "nav_unpin_chat") if chat.get("is_pinned") else t(language, "nav_pin_chat")
     return InlineKeyboardMarkup(
         [
             [InlineKeyboardButton(t(language, "button_full_analysis"), callback_data="rc:home:sec:overview")],
             [
-                InlineKeyboardButton(t(language, "button_timeline"), callback_data="rc:home:sec:timeline"),
+                InlineKeyboardButton(t(language, "nav_chat_history_button"), callback_data="rc:home:sec:timeline"),
                 InlineKeyboardButton(t(language, "button_activity"), callback_data="rc:home:sec:activity"),
             ],
             [
@@ -205,8 +243,16 @@ def chat_home_details_menu_keyboard(*, language: str = "en"):
                 InlineKeyboardButton(t(language, "button_chat_reports_short"), callback_data="rc:home:sec:reports"),
             ],
             [InlineKeyboardButton(t(language, "button_change_context"), callback_data="rc:home:context")],
+            [
+                InlineKeyboardButton(favorite_label, callback_data="rc:home:fav:toggle"),
+                InlineKeyboardButton(pin_label, callback_data="rc:home:pin:toggle"),
+            ],
+            [InlineKeyboardButton(important_label, callback_data="rc:home:important:toggle")],
             [InlineKeyboardButton(t(language, "button_chat_settings"), callback_data="rc:home:sec:settings")],
-            [InlineKeyboardButton(t(language, "button_chat_home"), callback_data="rc:home:open")],
+            [
+                InlineKeyboardButton(t(language, "nav_chat_button"), callback_data="rc:home:open"),
+                InlineKeyboardButton(t(language, "nav_menu_button"), callback_data=CB_MAIN),
+            ],
         ]
     )
 
@@ -239,9 +285,12 @@ def ai_result_keyboard(*, language: str = "en"):
 
     return InlineKeyboardMarkup(
         [
-            [InlineKeyboardButton(t(language, "button_full_analysis"), callback_data="rc:home:ai:full")],
-            [InlineKeyboardButton(t(language, "ai_advice_title"), callback_data="rc:home:ai:advice")],
-            [InlineKeyboardButton(t(language, "button_chat_home"), callback_data="rc:home:open")],
+            [InlineKeyboardButton(t(language, "report_full_analysis_button"), callback_data="rc:home:ai:full")],
+            [
+                InlineKeyboardButton(t(language, "report_why_button"), callback_data="rc:home:ai:why"),
+                InlineKeyboardButton(t(language, "nav_chat_button"), callback_data="rc:home:open"),
+            ],
+            [InlineKeyboardButton(t(language, "nav_menu_button"), callback_data=CB_MAIN)],
         ]
     )
 
@@ -283,9 +332,12 @@ def analysis_result_keyboard(report_id: str, *, language: str = "en"):
 
     return InlineKeyboardMarkup(
         [
-            [InlineKeyboardButton(t(language, "button_full_analysis"), callback_data=f"rc:rep:full:{report_id}")],
-            [InlineKeyboardButton(t(language, "ai_advice_title"), callback_data=f"rc:rep:advice:{report_id}")],
-            [InlineKeyboardButton(t(language, "button_chat_home"), callback_data="rc:home:open")],
+            [InlineKeyboardButton(t(language, "report_full_analysis_button"), callback_data=f"rc:rep:full:{report_id}")],
+            [
+                InlineKeyboardButton(t(language, "report_why_button"), callback_data=f"rc:rep:why:{report_id}"),
+                InlineKeyboardButton(t(language, "nav_chat_button"), callback_data="rc:home:open"),
+            ],
+            [InlineKeyboardButton(t(language, "nav_menu_button"), callback_data=CB_MAIN)],
         ]
     )
 
@@ -324,11 +376,11 @@ def automatic_analysis_result_keyboard(report_id: str, *, source_notification_id
     from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 
     rows = [
-        [InlineKeyboardButton(t(language, "button_full_analysis"), callback_data=f"rc:rep:full:{report_id}")],
+        [InlineKeyboardButton(t(language, "report_full_analysis_button"), callback_data=f"rc:rep:full:{report_id}")],
     ]
     if source_notification_id:
         rows.append([InlineKeyboardButton(t(language, "automation_disable_chat"), callback_data=f"rc:auto:disable:{source_notification_id}")])
-    rows.append([InlineKeyboardButton(t(language, "button_chat_home"), callback_data="rc:home:open")])
+    rows.append([InlineKeyboardButton(t(language, "nav_chat_button"), callback_data="rc:home:open")])
     return InlineKeyboardMarkup(rows)
 
 
@@ -340,8 +392,8 @@ def chat_home_section_keyboard(chat: dict, *, language: str = "en", section: str
         rows.append([InlineKeyboardButton(t(language, "button_details"), callback_data="rc:home:details")])
     rows.append(
         [
-            InlineKeyboardButton(t(language, "button_back"), callback_data="rc:home:open"),
-            InlineKeyboardButton(t(language, "button_main"), callback_data=CB_MAIN),
+            InlineKeyboardButton(t(language, "nav_chat_button"), callback_data="rc:home:open"),
+            InlineKeyboardButton(t(language, "nav_menu_button"), callback_data=CB_MAIN),
         ]
     )
     return InlineKeyboardMarkup(rows)
@@ -429,8 +481,8 @@ def timeline_summary_keyboard(*, language: str = "en"):
             [InlineKeyboardButton(t(language, "button_browse_timeline"), callback_data="rc:tl:page:0")],
             [InlineKeyboardButton(t(language, "button_timeline_chart"), callback_data="rc:tl:chart")],
             [
-                InlineKeyboardButton(t(language, "button_chat_home"), callback_data="rc:home:open"),
-                InlineKeyboardButton(t(language, "button_main"), callback_data=CB_MAIN),
+                InlineKeyboardButton(t(language, "nav_chat_button"), callback_data="rc:home:open"),
+                InlineKeyboardButton(t(language, "nav_menu_button"), callback_data=CB_MAIN),
             ],
         ]
     )
@@ -469,10 +521,10 @@ def timeline_page_keyboard(
     rows.append(
         [
             InlineKeyboardButton(t(language, "button_back"), callback_data="rc:home:sec:timeline"),
-            InlineKeyboardButton(t(language, "button_chat_home"), callback_data="rc:home:open"),
+            InlineKeyboardButton(t(language, "nav_chat_button"), callback_data="rc:home:open"),
         ]
     )
-    rows.append([InlineKeyboardButton(t(language, "button_main"), callback_data=CB_MAIN)])
+    rows.append([InlineKeyboardButton(t(language, "nav_menu_button"), callback_data=CB_MAIN)])
     return InlineKeyboardMarkup(rows)
 
 
@@ -503,18 +555,18 @@ def category_keyboard(folders: Sequence[DialogFolder] = (), *, language: str = "
     from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 
     rows = [
-        [InlineKeyboardButton("All chats", callback_data="rc:browse:cat:all")],
+        [InlineKeyboardButton(t(language, "nav_private_chats_button"), callback_data="rc:browse:cat:private")],
         [
-            InlineKeyboardButton("Person", callback_data="rc:browse:cat:private"),
-            InlineKeyboardButton("Group", callback_data="rc:browse:cat:groups"),
+            InlineKeyboardButton(t(language, "nav_favorites_button"), callback_data="rc:browse:cat:favorites"),
+            InlineKeyboardButton(t(language, "nav_recent_button"), callback_data="rc:browse:cat:recent"),
         ],
         [
-            InlineKeyboardButton("Channel", callback_data="rc:browse:cat:channels"),
-            InlineKeyboardButton("Unread", callback_data="rc:browse:cat:unread"),
+            InlineKeyboardButton(t(language, "nav_groups_button"), callback_data="rc:browse:cat:groups"),
+            InlineKeyboardButton(t(language, "nav_channels_button"), callback_data="rc:browse:cat:channels"),
         ],
         [
-            InlineKeyboardButton("Favorites", callback_data="rc:browse:cat:favorites"),
-            InlineKeyboardButton("Recently analyzed", callback_data="rc:browse:cat:recent"),
+            InlineKeyboardButton(t(language, "nav_bots_button"), callback_data="rc:browse:cat:bots"),
+            InlineKeyboardButton(t(language, "nav_all_chats_button"), callback_data="rc:browse:cat:all"),
         ],
     ]
     for folder in folders:
@@ -528,7 +580,7 @@ def category_keyboard(folders: Sequence[DialogFolder] = (), *, language: str = "
         )
     rows.append(
         [
-            InlineKeyboardButton("Search", callback_data="rc:browse:search"),
+            InlineKeyboardButton(t(language, "nav_search_button"), callback_data="rc:browse:search"),
             InlineKeyboardButton(t(language, "button_cancel"), callback_data=CB_CANCEL),
         ]
     )
@@ -544,34 +596,46 @@ def chat_list_keyboard(
     has_next: bool,
     selected_chat_id: str | None = None,
     language: str = "en",
+    item_tokens: Sequence[str] | None = None,
+    total: int | None = None,
+    native: bool = False,
+    inside_chat: bool = False,
 ):
     from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 
     rows = []
     page_start = page * page_size
     for index, conversation in enumerate(conversations, start=page_start):
+        token = item_tokens[index - page_start] if item_tokens and index - page_start < len(item_tokens) else str(index)
         rows.append(
             [
                 InlineKeyboardButton(
-                    chat_button_label(conversation, index=index, selected=conversation.conversation_id == selected_chat_id),
-                    callback_data=f"rc:browse:select:{index}",
+                    chat_button_label(conversation, index=index, selected=conversation.conversation_id == selected_chat_id, native=native),
+                    callback_data=f"rc:browse:select:{token}",
                 )
             ]
         )
     navigation = []
     if has_previous:
-        navigation.append(InlineKeyboardButton("Previous", callback_data="rc:browse:page:previous"))
+        navigation.append(InlineKeyboardButton("⬅️", callback_data="rc:browse:page:previous"))
+    if total is not None:
+        total_pages = max(1, (int(total) + page_size - 1) // page_size)
+        navigation.append(InlineKeyboardButton(t(language, "nav_page_indicator", current=page + 1, total=total_pages), callback_data="rc:noop"))
     if has_next:
-        navigation.append(InlineKeyboardButton("Next", callback_data="rc:browse:page:next"))
+        navigation.append(InlineKeyboardButton("➡️", callback_data="rc:browse:page:next"))
     if navigation:
         rows.append(navigation)
+    elif total is not None:
+        rows.append([InlineKeyboardButton(t(language, "nav_page_indicator", current=1, total=1), callback_data="rc:noop")])
     rows.append(
         [
-            InlineKeyboardButton("Search", callback_data="rc:browse:search"),
-            InlineKeyboardButton(t(language, "button_back"), callback_data="rc:browse:back:categories"),
+            InlineKeyboardButton(t(language, "nav_search_button"), callback_data="rc:browse:search"),
+            InlineKeyboardButton(t(language, "button_back"), callback_data="rc:nav:back"),
         ]
     )
-    rows.append([InlineKeyboardButton(t(language, "button_cancel"), callback_data=CB_CANCEL)])
+    if inside_chat:
+        rows.append([InlineKeyboardButton(t(language, "nav_chat_button"), callback_data="rc:home:open")])
+    rows.append([InlineKeyboardButton(t(language, "nav_menu_button"), callback_data=CB_MAIN)])
     return InlineKeyboardMarkup(rows)
 
 
@@ -580,8 +644,8 @@ def search_prompt_keyboard(language: str = "en"):
 
     return InlineKeyboardMarkup(
         [
-            [InlineKeyboardButton(t(language, "button_back"), callback_data="rc:browse:back:list")],
-            [InlineKeyboardButton(t(language, "button_cancel"), callback_data=CB_CANCEL)],
+            [InlineKeyboardButton(t(language, "button_back"), callback_data="rc:nav:back")],
+            [InlineKeyboardButton(t(language, "nav_menu_button"), callback_data=CB_MAIN)],
         ]
     )
 
@@ -589,10 +653,22 @@ def search_prompt_keyboard(language: str = "en"):
 def period_keyboard(language: str = "en"):
     from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 
-    rows = [[InlineKeyboardButton(option.label, callback_data=f"rc:analysis:period:{option.period_id}")] for option in PERIOD_OPTIONS]
+    rows = [[InlineKeyboardButton(period_option_label(option.period_id, option.label, language), callback_data=f"rc:analysis:period:{option.period_id}")] for option in PERIOD_OPTIONS]
     rows.append([InlineKeyboardButton(t(language, "button_back"), callback_data="rc:browse:back:list")])
     rows.append([InlineKeyboardButton(t(language, "button_cancel"), callback_data=CB_CANCEL)])
     return InlineKeyboardMarkup(rows)
+
+
+def period_option_label(period_id: str, fallback: str, language: str) -> str:
+    key = {
+        "7d": "period_last_7_days",
+        "30d": "period_last_30_days",
+        "90d": "period_last_90_days",
+        "365d": "period_last_year",
+        "full": "period_full_history",
+        "custom": "period_custom",
+    }.get(period_id)
+    return t(language, key) if key else fallback
 
 
 def custom_end_keyboard(language: str = "en"):
@@ -681,7 +757,7 @@ def report_list_keyboard(reports: Sequence[dict], *, prefix: str = "rc:rep:open"
             [
                 InlineKeyboardButton(
                     report_button_label(report),
-                    callback_data=f"{prefix}:{report['report_id']}",
+                    callback_data=f"{prefix}:{report.get('callback_ref') or report['report_id']}",
                 )
             ]
         )
@@ -692,7 +768,7 @@ def report_list_keyboard(reports: Sequence[dict], *, prefix: str = "rc:rep:open"
 def report_sections_keyboard(report: dict, *, language: str = "en"):
     from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 
-    report_id = report["report_id"]
+    report_id = report.get("callback_ref") or report["report_id"]
     fav_label = "Unfavorite" if report.get("is_favorite") else "Favorite"
     return InlineKeyboardMarkup(
         [
@@ -897,8 +973,11 @@ def module_settings_keyboard(selected: Sequence[str], *, language: str = "en"):
     return InlineKeyboardMarkup(rows)
 
 
-def chat_button_label(conversation: ConversationRef, *, index: int, selected: bool = False) -> str:
+def chat_button_label(conversation: ConversationRef, *, index: int, selected: bool = False, native: bool = False) -> str:
     title = sanitize_label(conversation.title, fallback="untitled", limit=44)
+    if native:
+        prefix = "✓ " if selected else ""
+        return f"{prefix}{chat_type_icon(conversation)} {title}"
     type_label = type_indicator(conversation.conversation_type)
     prefix = "Selected: " if selected else ""
     if type_label:
@@ -909,7 +988,11 @@ def chat_button_label(conversation: ConversationRef, *, index: int, selected: bo
 def type_indicator(conversation_type: str | None) -> str:
     return {
         "one_to_one": "Person",
+        "self": "Person",
+        "bot": "Bot",
         "group": "Group",
+        "supergroup": "Group",
+        "basic_group": "Group",
         "channel": "Channel",
     }.get(conversation_type or "", "")
 
@@ -917,7 +1000,8 @@ def type_indicator(conversation_type: str | None) -> str:
 def chat_row_label_from_dict(chat: dict, *, index: int) -> str:
     title = sanitize_label(chat.get("title"), fallback="untitled", limit=44)
     favorite = "Favorite: " if chat.get("is_favorite") else ""
-    return f"{index + 1}. {favorite}{type_indicator(chat.get('chat_type'))} {title}".strip()
+    pin = "📌 " if chat.get("is_pinned") else ""
+    return f"{pin}{favorite}{chat_type_icon(chat)} {title}".strip()
 
 
 def report_button_label(report: dict) -> str:

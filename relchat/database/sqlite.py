@@ -465,6 +465,16 @@ CREATE TABLE IF NOT EXISTS navigation_states (
   PRIMARY KEY(bot_user_id, token)
 );
 
+CREATE TABLE IF NOT EXISTS report_callback_tokens (
+  bot_user_id INTEGER NOT NULL,
+  token TEXT NOT NULL,
+  report_id TEXT NOT NULL,
+  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY(bot_user_id, token),
+  UNIQUE(bot_user_id, report_id)
+);
+
 CREATE INDEX IF NOT EXISTS idx_user_chats_user_saved
   ON user_chats(bot_user_id, is_saved, updated_at);
 
@@ -524,6 +534,9 @@ CREATE INDEX IF NOT EXISTS idx_communication_timeline_user_chat
 
 CREATE INDEX IF NOT EXISTS idx_navigation_states_user
   ON navigation_states(bot_user_id, updated_at);
+
+CREATE INDEX IF NOT EXISTS idx_report_callback_tokens_user
+  ON report_callback_tokens(bot_user_id, updated_at);
 """
 
 
@@ -585,10 +598,18 @@ def migrate_schema(conn: sqlite3.Connection) -> None:
     ensure_column(conn, "analysis_jobs", "retry_attempt_count", "INTEGER NOT NULL DEFAULT 0")
     ensure_column(conn, "analysis_jobs", "failure_category", "TEXT")
     ensure_column(conn, "analysis_jobs", "idempotency_key", "TEXT")
+    conn.execute(
+        """
+        UPDATE user_chats
+        SET normalized_title = LOWER(COALESCE(local_title, display_title, ''))
+        WHERE normalized_title IS NULL
+        """
+    )
     conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_chats_source_chat ON chats(source, chat_id)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_user_chats_user_pinned ON user_chats(bot_user_id, is_pinned, recent_opened_at)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_user_chats_user_type_title ON user_chats(bot_user_id, chat_type, normalized_title)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_navigation_states_user ON navigation_states(bot_user_id, updated_at)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_report_callback_tokens_user ON report_callback_tokens(bot_user_id, updated_at)")
     conn.execute(
         """
         CREATE UNIQUE INDEX IF NOT EXISTS idx_messages_source_chat_message

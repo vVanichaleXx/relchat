@@ -30,12 +30,14 @@ from relchat.bot.state import get_flow
 from relchat.database.repositories import (
     clear_reports,
     delete_report,
+    ensure_report_callback_token,
     get_report,
     get_user_settings,
     latest_ai_analysis_for_report,
     latest_period_comparison_for_report,
     list_analysis_jobs,
     list_reports,
+    resolve_report_callback_token,
     set_report_favorite,
 )
 from relchat.database.sqlite import connect, init_db
@@ -82,6 +84,7 @@ async def handle_reports_home_action(update: Update, context: ContextTypes.DEFAU
                 await edit_or_reply(update, format_failed_jobs(jobs), reply_markup=reports_home_keyboard(language))
                 return
             reports = list_reports(conn, user_id, favorites=section == "favorites", limit=20)
+            reports = with_report_callback_refs(conn, user_id, reports)
             title = {
                 "latest": "Latest reports",
                 "by_chat": "Reports by chat",
@@ -111,17 +114,20 @@ async def handle_report_action(update: Update, context: ContextTypes.DEFAULT_TYP
     if len(parts) < 4:
         return
     action = parts[2]
-    report_id = parts[3]
+    report_ref = parts[3]
     settings = get_context_settings(context)
     user_id = bot_user_id(update)
     with connect(settings.db_path) as conn:
+        report_id = resolve_report_callback_token(conn, user_id, report_ref)
         report = get_report(conn, report_id)
         language = get_user_settings(conn, user_id).get("language", "en")
         analysis = latest_ai_analysis_for_report(conn, user_id, report_id) if report else None
         comparison = latest_period_comparison_for_report(conn, user_id, report_id) if report else None
+        callback_ref = ensure_report_callback_token(conn, user_id, report_id) if report_id and report else report_ref
     if not report or report["bot_user_id"] != user_id:
         await edit_or_reply(update, "This local report is no longer available.")
         return
+    report = {**report, "callback_ref": callback_ref}
     if analysis and comparison:
         analysis = {**analysis, "comparison": comparison.get("result") or {}}
     if action in {"open", "full"}:
@@ -130,7 +136,7 @@ async def handle_report_action(update: Update, context: ContextTypes.DEFAULT_TYP
             if analysis and analysis.get("status") == "completed"
             else format_unified_analysis_result(report, language=language)
         )
-        keyboard = analysis_detail_keyboard(report_id, language=language) if action == "full" else analysis_result_keyboard(report_id, language=language)
+        keyboard = analysis_detail_keyboard(callback_ref, language=language) if action == "full" else analysis_result_keyboard(callback_ref, language=language)
         await edit_or_reply_chunked(update, text, reply_markup=keyboard)
         return
     if action == "compare":
@@ -139,13 +145,15 @@ async def handle_report_action(update: Update, context: ContextTypes.DEFAULT_TYP
             if comparison
             else format_ai_result_section({"comparison": {"status": "insufficient_data"}}, "comparison", language=language)
         )
-        await edit_or_reply(update, text, reply_markup=analysis_detail_keyboard(report_id, language=language))
+        await edit_or_reply(update, text, reply_markup=analysis_detail_keyboard(callback_ref, language=language))
         return
     if action in {"prev", "next"}:
         target = adjacent_report_for_chat(settings, user_id, report, previous=action == "prev")
         if target is None:
-            await edit_or_reply(update, t(language, "comparison_not_enough"), reply_markup=analysis_detail_keyboard(report_id, language=language))
+            await edit_or_reply(update, t(language, "comparison_not_enough"), reply_markup=analysis_detail_keyboard(callback_ref, language=language))
             return
+        with connect(settings.db_path) as conn:
+            target = {**target, "callback_ref": ensure_report_callback_token(conn, user_id, target["report_id"])}
         await edit_or_reply(update, format_report_overview(target), reply_markup=report_sections_keyboard(target, language=language))
         return
     if action == "advice":
@@ -154,7 +162,7 @@ async def handle_report_action(update: Update, context: ContextTypes.DEFAULT_TYP
             if analysis and analysis.get("status") == "completed"
             else format_unified_analysis_result(report, language=language)
         )
-        await edit_or_reply(update, text, reply_markup=analysis_result_keyboard(report_id, language=language))
+        await edit_or_reply(update, text, reply_markup=analysis_result_keyboard(callback_ref, language=language))
         return
     if action == "why":
         text = (
@@ -162,7 +170,7 @@ async def handle_report_action(update: Update, context: ContextTypes.DEFAULT_TYP
             if analysis and analysis.get("status") == "completed"
             else format_unified_analysis_result(report, language=language)
         )
-        await edit_or_reply(update, text, reply_markup=analysis_detail_keyboard(report_id, language=language))
+        await edit_or_reply(update, text, reply_markup=analysis_detail_keyboard(callback_ref, language=language))
         return
     if action == "sec":
         section = parts[4] if len(parts) >= 5 else "overview"
@@ -172,13 +180,14 @@ async def handle_report_action(update: Update, context: ContextTypes.DEFAULT_TYP
         with connect(settings.db_path) as conn:
             set_report_favorite(conn, report_id, not report.get("is_favorite"))
             report = get_report(conn, report_id) or report
+        report = {**report, "callback_ref": callback_ref}
         await edit_or_reply(update, format_report_overview(report), reply_markup=report_sections_keyboard(report, language=language))
         return
     if action == "delete":
         await edit_or_reply(
             update,
             format_destructive_confirmation("delete this local report"),
-            reply_markup=delete_report_confirmation_keyboard(report_id, language=language),
+            reply_markup=delete_report_confirmation_keyboard(callback_ref, language=language),
         )
         return
     if action == "delete_confirm":
@@ -230,3 +239,7 @@ def adjacent_report_for_chat(settings, user_id: int, report: dict, *, previous: 
     if target_index < 0 or target_index >= len(reports):
         return None
     return reports[target_index]
+
+
+def with_report_callback_refs(conn, user_id: int, reports: list[dict]) -> list[dict]:
+    return [{**report, "callback_ref": ensure_report_callback_token(conn, user_id, report["report_id"])} for report in reports]

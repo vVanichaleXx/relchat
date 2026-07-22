@@ -216,10 +216,14 @@ class FakeQuery:
 
 
 class ProductUxV7AiTest(unittest.IsolatedAsyncioTestCase):
-    def test_simplified_three_button_main_menu(self) -> None:
+    def test_private_first_main_menu(self) -> None:
         labels = [button.text for row in main_keyboard("en").inline_keyboard for button in row]
 
-        self.assertEqual(labels, ["Analyze a chat", "My chats", "Settings"])
+        self.assertIn("👤 Private chats", labels)
+        self.assertIn("⭐ Favorites", labels)
+        self.assertIn("🕘 Recent", labels)
+        self.assertIn("🔍 Find chat", labels)
+        self.assertIn("⚙️ Settings", labels)
         self.assertNotIn("Reports", labels)
         self.assertNotIn("Help", labels)
 
@@ -349,7 +353,7 @@ class ProductUxV7AiTest(unittest.IsolatedAsyncioTestCase):
         callbacks = [button.callback_data or "" for row in keyboard.inline_keyboard for button in row]
         labels = [button.text for row in keyboard.inline_keyboard for button in row]
 
-        self.assertEqual(labels, ["Full analysis", "Advice", "Chat Home"])
+        self.assertEqual(labels, ["📄 Full analysis", "💡 Why this conclusion", "💬 Chat", "🏠 Menu"])
         self.assertTrue(all(len(value) < 64 for value in callbacks))
         self.assertNotIn("Anna", "".join(callbacks))
         self.assertNotIn("telegram-chat", "".join(callbacks))

@@ -123,21 +123,22 @@ def overview_report(
 
 
 class ProductUxV3NavigationTest(unittest.IsolatedAsyncioTestCase):
-    def test_main_menu_has_three_primary_actions_and_is_localized(self) -> None:
+    def test_main_menu_is_private_first_and_localized(self) -> None:
         english = main_keyboard("en")
         russian = main_keyboard("ru")
 
         english_labels = [button.text for row in english.inline_keyboard for button in row]
         russian_labels = [button.text for row in russian.inline_keyboard for button in row]
 
-        self.assertEqual(len(english_labels), 3)
-        self.assertIn("Analyze a chat", english_labels)
-        self.assertIn("My chats", english_labels)
-        self.assertIn("Settings", english_labels)
+        self.assertIn("👤 Private chats", english_labels)
+        self.assertIn("⭐ Favorites", english_labels)
+        self.assertIn("🕘 Recent", english_labels)
+        self.assertIn("🔍 Find chat", english_labels)
+        self.assertIn("⚙️ Settings", english_labels)
         self.assertNotIn("Reports", english_labels)
         self.assertNotIn("Help", english_labels)
-        self.assertIn("Проанализировать чат", russian_labels)
-        self.assertIn("Мои чаты", russian_labels)
+        self.assertIn("👤 Личные чаты", russian_labels)
+        self.assertIn("⭐ Избранные", russian_labels)
 
     def test_private_group_channel_chat_home_variants(self) -> None:
         private_text = format_chat_home(chat("one_to_one"), report=report(), pending_followups=2, running=False, language="en")
@@ -282,7 +283,7 @@ class ProductUxV3NavigationTest(unittest.IsolatedAsyncioTestCase):
             handled = await handle_chat_home_callback(update, context, ["rc", "home", "sec", "activity"])
 
         self.assertTrue(handled)
-        self.assertIn("no longer available", update.callback_query.edited_text)
+        self.assertIn("out of date", update.callback_query.edited_text)
         self.assertIsNotNone(update.callback_query.edited_markup)
 
     async def test_back_navigation_returns_to_parent_saved_list(self) -> None:

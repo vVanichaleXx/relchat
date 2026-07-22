@@ -18,6 +18,10 @@ class ConversationRef:
     username: str | None = None
     folder_id: int | None = None
     unread_count: int = 0
+    is_favorite: bool = False
+    is_pinned: bool = False
+    recent_opened_at: str | None = None
+    recent_analyzed_at: str | None = None
 
 
 @dataclass(frozen=True)

@@ -267,7 +267,8 @@ class ContextSpecificRenderingV11Test(unittest.TestCase):
         detail_callbacks = [button.callback_data or "" for row in ai_detail_keyboard(language="ru").inline_keyboard for button in row]
         correction_callbacks = [button.callback_data or "" for row in context_correction_keyboard(language="ru").inline_keyboard for button in row]
 
-        self.assertLessEqual(len(primary_labels), 3)
+        self.assertLessEqual(len(primary_labels), 4)
+        self.assertIn("🏠 Меню", primary_labels)
         self.assertIn("rc:home:context", detail_callbacks)
         self.assertTrue(all("chat-1" not in value for value in correction_callbacks))
         self.assertNotIn("not available", ru_text.casefold())

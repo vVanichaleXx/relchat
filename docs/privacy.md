@@ -74,4 +74,24 @@ include the report body, message text, personalized recommendation text, AI
 prompt, raw provider response, participant identity, usernames, phone numbers,
 or Telegram IDs.
 
+V13 Telegram navigation stores only UI metadata needed for predictable local
+navigation: favorites, pins, recent RelChat chat opens, cached chat type,
+normalized title for local search, and short-lived navigation state tokens. All
+records are scoped by `bot_user_id`, source, and chat where applicable. These
+fields are used to prioritize private chats, quick access, search, and paging;
+they must not be interpreted as emotional importance or closeness.
+
+Navigation UX audit may record safe metadata such as screen ID, previous screen
+ID, navigation action, category opened, page number, list result count, whether
+search was used, quick-access usage, chat type, path length to analysis, stale
+callback, and menu edit fallback. It must not record chat titles, search
+queries, participant names, Telegram IDs, usernames, phone numbers, exact
+callback data, report text, or message content.
+
+Deleting all user data removes favorites, pins, recent selections, navigation
+state, ranking metadata, and cached per-user chat metadata along with reports,
+jobs, AI consent, reminders, automation state, memory, timeline events, and
+analysis artifacts. Deleting a single chat detaches that chat's local UI
+metadata and navigation references without deleting anything from Telegram.
+
 If a conversation is too large, local metrics cover the imported selected period while AI receives only the configured representative sample. The report must disclose partial AI coverage.

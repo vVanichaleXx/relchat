@@ -112,8 +112,8 @@ class ProductUxV4ChatHomeTest(unittest.IsolatedAsyncioTestCase):
         self.assertIn("Anna", rendered)
         self.assertIn("Everything looks stable.", rendered)
         self.assertIn("Communication score", rendered)
-        self.assertIn("Last analysis\nToday", rendered)
-        self.assertIn("Follow-up\nNo follow-ups suggested yet.", rendered)
+        self.assertIn("Last analysis Today", rendered)
+        self.assertNotIn("No follow-ups suggested yet.", rendered)
         self.assertNotIn(SECRET_TEXT, rendered)
         self.assertNotIn(chat()["chat_id"], rendered)
         self.assertNotIn("anna_secret_username", rendered)
@@ -139,7 +139,7 @@ class ProductUxV4ChatHomeTest(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(view["state"]["tone"], "attention")
         self.assertIn("A few items may need your attention.", rendered)
-        self.assertIn("Follow-up\n3 follow-ups", rendered)
+        self.assertIn("3 follow-ups", rendered)
         self.assertNotIn(SECRET_TEXT, rendered)
 
     def test_group_and_channel_wording(self) -> None:
@@ -178,8 +178,8 @@ class ProductUxV4ChatHomeTest(unittest.IsolatedAsyncioTestCase):
 
         self.assertIn("No analysis yet.", rendered)
         self.assertIn("Run your first analysis", rendered)
-        self.assertEqual(labels[0], "▶ Run analysis")
-        self.assertIn("Details", labels)
+        self.assertEqual(labels[0], "🔍 Communication analysis")
+        self.assertIn("⋯ More", labels)
         self.assertNotIn("Timeline", labels)
         self.assertNotIn("Chat settings", labels)
 
@@ -188,8 +188,8 @@ class ProductUxV4ChatHomeTest(unittest.IsolatedAsyncioTestCase):
         labels = [button.text for row in keyboard.inline_keyboard for button in row]
         callbacks = [button.callback_data or "" for row in keyboard.inline_keyboard for button in row]
 
-        self.assertEqual(labels[0], "▶ Update analysis")
-        self.assertIn("Details", labels)
+        self.assertEqual(labels[0], "🔍 Communication analysis")
+        self.assertIn("⋯ More", labels)
         self.assertNotIn("Reports", labels)
         self.assertNotIn("Response rhythm", labels)
         self.assertTrue(all(len(value) < 64 for value in callbacks))
@@ -198,7 +198,7 @@ class ProductUxV4ChatHomeTest(unittest.IsolatedAsyncioTestCase):
         self.assertIn("rc:home:details", callbacks)
 
         details_labels = [button.text for row in chat_home_details_menu_keyboard(language="en").inline_keyboard for button in row]
-        self.assertIn("Timeline", details_labels)
+        self.assertIn("🕘 Communication history", details_labels)
         self.assertIn("Activity", details_labels)
         self.assertIn("Reports", details_labels)
         self.assertIn("Chat settings", details_labels)
@@ -229,7 +229,7 @@ class ProductUxV4ChatHomeTest(unittest.IsolatedAsyncioTestCase):
         secondary = secondary_chat_home_actions(language="en")
         utility = utility_chat_home_actions(language="en")
 
-        self.assertEqual(primary[0][0].text, "▶ Update analysis")
+        self.assertEqual(primary[0][0].text, "🔍 Communication analysis")
         self.assertEqual([button.text for button in secondary[0]], ["Timeline", "Activity"])
         self.assertEqual([button.text for button in secondary[1]], ["Insights", "Follow-ups"])
         self.assertIn("Delete Local Data", [button.text for row in utility for button in row])

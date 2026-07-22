@@ -697,6 +697,47 @@ def delete_navigation_states_for_user(conn: sqlite3.Connection, bot_user_id: int
     conn.execute("DELETE FROM navigation_states WHERE bot_user_id = ?", (bot_user_id,))
 
 
+def ensure_report_callback_token(conn: sqlite3.Connection, bot_user_id: int, report_id: str) -> str:
+    existing = conn.execute(
+        """
+        SELECT token FROM report_callback_tokens
+        WHERE bot_user_id = ? AND report_id = ?
+        """,
+        (bot_user_id, report_id),
+    ).fetchone()
+    if existing is not None:
+        return str(existing["token"])
+    token = f"r{uuid.uuid4().hex[:10]}"
+    conn.execute(
+        """
+        INSERT INTO report_callback_tokens(bot_user_id, token, report_id)
+        VALUES (?, ?, ?)
+        """,
+        (bot_user_id, token, report_id),
+    )
+    return token
+
+
+def resolve_report_callback_token(conn: sqlite3.Connection, bot_user_id: int, value: str) -> str | None:
+    row = conn.execute(
+        """
+        SELECT report_id FROM report_callback_tokens
+        WHERE bot_user_id = ? AND token = ?
+        """,
+        (bot_user_id, value),
+    ).fetchone()
+    if row is not None:
+        return str(row["report_id"])
+    report = get_report(conn, value)
+    if report and int(report.get("bot_user_id") or 0) == int(bot_user_id):
+        return str(value)
+    return None
+
+
+def delete_report_callback_tokens_for_user(conn: sqlite3.Connection, bot_user_id: int) -> None:
+    conn.execute("DELETE FROM report_callback_tokens WHERE bot_user_id = ?", (bot_user_id,))
+
+
 def save_dialog_cache(
     conn: sqlite3.Connection,
     bot_user_id: int,
@@ -851,13 +892,19 @@ def rename_user_chat(
     chat_id: str,
     local_title: str | None,
 ) -> None:
+    normalized = normalized_chat_title(local_title)
     conn.execute(
         """
         UPDATE user_chats
-        SET local_title = ?, normalized_title = ?, updated_at = CURRENT_TIMESTAMP
+        SET local_title = ?,
+            normalized_title = CASE
+              WHEN ? = '' THEN LOWER(COALESCE(display_title, ''))
+              ELSE ?
+            END,
+            updated_at = CURRENT_TIMESTAMP
         WHERE bot_user_id = ? AND source = ? AND chat_id = ?
         """,
-        (local_title, normalized_chat_title(local_title), bot_user_id, source, chat_id),
+        (local_title, normalized, normalized, bot_user_id, source, chat_id),
     )
 
 
@@ -1070,6 +1117,10 @@ def conversation_ref_from_user_chat(chat: dict[str, Any]) -> ConversationRef:
         username=chat.get("username"),
         folder_id=chat.get("folder_id"),
         unread_count=int(chat.get("unread_count") or 0),
+        is_favorite=bool(chat.get("is_favorite")),
+        is_pinned=bool(chat.get("is_pinned")),
+        recent_opened_at=chat.get("recent_opened_at"),
+        recent_analyzed_at=chat.get("recent_analyzed_at"),
     )
 
 
@@ -2330,6 +2381,10 @@ def set_report_favorite(conn: sqlite3.Connection, report_id: str, favorite: bool
 def delete_report(conn: sqlite3.Connection, report_id: str, bot_user_id: int) -> None:
     delete_v12_report_artifacts(conn, bot_user_id, report_id)
     conn.execute(
+        "DELETE FROM report_callback_tokens WHERE bot_user_id = ? AND report_id = ?",
+        (bot_user_id, report_id),
+    )
+    conn.execute(
         "DELETE FROM reports WHERE report_id = ? AND bot_user_id = ?",
         (report_id, bot_user_id),
     )
@@ -2338,6 +2393,7 @@ def delete_report(conn: sqlite3.Connection, report_id: str, bot_user_id: int) ->
 def clear_reports(conn: sqlite3.Connection, bot_user_id: int) -> int:
     before = conn.total_changes
     conn.execute("DELETE FROM reports WHERE bot_user_id = ?", (bot_user_id,))
+    conn.execute("DELETE FROM report_callback_tokens WHERE bot_user_id = ?", (bot_user_id,))
     conn.execute("DELETE FROM period_comparisons WHERE bot_user_id = ?", (bot_user_id,))
     conn.execute("DELETE FROM communication_profile_snapshots WHERE bot_user_id = ?", (bot_user_id,))
     conn.execute("DELETE FROM interpretation_evidence_links WHERE bot_user_id = ?", (bot_user_id,))
@@ -3127,6 +3183,7 @@ def delete_all_user_data(conn: sqlite3.Connection, bot_user_id: int) -> None:
     conn.execute("DELETE FROM analysis_framework_settings WHERE bot_user_id = ?", (bot_user_id,))
     conn.execute("DELETE FROM semantic_analysis_settings WHERE bot_user_id = ?", (bot_user_id,))
     conn.execute("DELETE FROM navigation_states WHERE bot_user_id = ?", (bot_user_id,))
+    conn.execute("DELETE FROM report_callback_tokens WHERE bot_user_id = ?", (bot_user_id,))
     conn.execute("DELETE FROM ai_consents WHERE bot_user_id = ?", (bot_user_id,))
     conn.execute("DELETE FROM user_settings WHERE bot_user_id = ?", (bot_user_id,))
     conn.execute("DELETE FROM bot_user_profiles WHERE bot_user_id = ?", (bot_user_id,))

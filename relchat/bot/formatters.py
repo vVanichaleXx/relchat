@@ -9,6 +9,8 @@ from relchat.core.models import ConversationEvent, ConversationRef, Message
 from relchat.events.extractor import summarize_events
 from relchat.bot.localization import t
 from relchat.bot.services.chat_home_service import build_chat_home_view_model
+from relchat.bot.services.chat_types import category_title as chat_category_title
+from relchat.bot.services.chat_types import chat_type_icon
 from relchat.bot.services.context import context_label, context_score_label, low_confidence_context_note
 from relchat.bot.services.evidence_service import build_why_conclusion_panels
 from relchat.bot.services.period_comparison import format_period_comparison_compact, format_period_comparison_full
@@ -67,11 +69,10 @@ def yes_no(value: bool) -> str:
     return "yes" if value else "no"
 
 
-def format_start() -> str:
-    return (
-        "RelChat\n\n"
-        "Choose an action below."
-    )
+def format_start(*, language: str = "en", first_launch: bool = False) -> str:
+    if first_launch:
+        return "\n\n".join([f"**{t(language, 'onboarding_ready_title')}**", t(language, "onboarding_private_first_body")])
+    return "\n\n".join([f"**{t(language, 'main_title')}**", t(language, "main_choose_action")])
 
 
 def format_help() -> str:
@@ -128,20 +129,29 @@ def format_main_menu(
     reports: int,
     followups: int = 0,
     running_jobs: int,
+    quick_access: Sequence[dict[str, Any]] | None = None,
 ) -> str:
     status = t(language, "main_connected") if telegram_connected else t(language, "main_not_connected")
     running = t(language, "main_running") if running_jobs else t(language, "main_idle")
-    return "\n".join(
+    lines = [
+        f"**{t(language, 'main_title')}**",
+        "",
+        t(language, "main_private_first_hint"),
+    ]
+    quick_access = list(quick_access or [])[:5]
+    if quick_access:
+        lines.extend(["", f"**{t(language, 'nav_quick_access')}**"])
+        for chat in quick_access:
+            title = sanitize_label(chat.get("title") or chat.get("display_title"), fallback=t(language, "chat_type_unknown"), limit=32)
+            lines.append(f"{chat_type_icon(chat)} {title}")
+    lines.extend(
         [
-            t(language, "main_title"),
             "",
-            status,
-            f"{t(language, 'main_saved_chats')}: {saved_chats}",
-            f"{t(language, 'main_reports')}: {reports}",
-            f"{t(language, 'main_followups')}: {followups}",
+            t(language, "main_menu_status_line", status=status, saved=saved_chats, reports=reports),
             f"{running}: {running_jobs}" if running_jobs else running,
         ]
     )
+    return "\n".join(lines)
 
 
 def format_onboarding(step: int, *, language: str, telegram_connected: bool) -> str:
@@ -150,6 +160,8 @@ def format_onboarding(step: int, *, language: str, telegram_connected: bool) -> 
     if step == 2:
         return "\n\n".join([t(language, "onboarding_2_title"), t(language, "onboarding_2_body")])
     connection = t(language, "onboarding_3_connected") if telegram_connected else t(language, "onboarding_3_missing")
+    if step >= 3 and telegram_connected:
+        return "\n\n".join([f"**{t(language, 'onboarding_ready_title')}**", t(language, "onboarding_private_first_body"), connection])
     return "\n\n".join(["Telegram", connection, t(language, "onboarding_safe_auth")])
 
 
@@ -327,22 +339,31 @@ def format_chat_home_view(view_model: dict[str, Any], *, language: str = "en") -
     )
     if not analysis.get("has_report") and not analysis.get("latest_score"):
         headline = f"{headline} {t(language, 'chat_home_v4_no_analysis_body')}"
+    context_or_type = context_label(chat.get("confirmed_context_category") or chat.get("analysis_context_used"), language=language)
+    if context_or_type == context_label(None, language=language):
+        context_or_type = readable_chat_type(chat_type, language=language)
+    last_analysis = sanitize_label(analysis.get("last_analysis_label"), fallback=t(language, "not_available"), limit=40)
+    period = sanitize_label(analysis.get("last_period_label"), fallback="", limit=40)
+    metadata = f"_{context_or_type} · {t(language, 'chat_home_v4_last_analysis')} {last_analysis}_"
+    if period:
+        metadata = f"_{context_or_type} · {period} · {t(language, 'chat_home_v4_last_analysis')} {last_analysis}_"
     lines = [
-        title,
-        readable_chat_type(chat_type, language=language),
+        f"**{title}**",
+        metadata,
         "",
         headline,
-        "",
-        render_field(score_title, score_line, sanitize_label(analysis.get("score_confidence_label"), fallback=analysis.get("data_confidence_label") or t(language, "not_available"), limit=40)),
-        "",
-        render_field(
-            t(language, "chat_home_v4_last_analysis"),
-            sanitize_label(analysis.get("last_analysis_label"), fallback=t(language, "not_available"), limit=40),
-            sanitize_label(analysis.get("last_period_label"), fallback=t(language, "not_available"), limit=40),
-        ),
-        "",
-        render_field(t(language, "chat_home_v4_followup_title"), chat_home_attention_line(attention, language=language)),
     ]
+    if analysis.get("has_report") or isinstance(score, (int, float)):
+        lines.extend(
+            [
+                "",
+                f"**{score_title}: {score_line}**",
+                f"{t(language, 'report_confidence')}: {sanitize_label(analysis.get('score_confidence_label'), fallback=analysis.get('data_confidence_label') or t(language, 'not_available'), limit=40)}",
+            ]
+        )
+    attention_line = chat_home_attention_line(attention, language=language)
+    if attention_line and attention_line not in {t(language, "chat_attention_clear"), t(language, "chat_home_v4_no_followups_value")}:
+        lines.extend(["", f"**{t(language, 'chat_home_v4_followup_title')}**", attention_line])
     if analysis.get("running"):
         lines.extend(["", t(language, "chat_home_running")])
     return "\n".join(lines)
@@ -406,14 +427,20 @@ def format_ai_result_overview(analysis: dict[str, Any], *, chat_title: str | Non
     history_text = format_history_segments_compact(result.get("history_segments"), language=language)
     if context_category == "work":
         return format_work_result_overview(analysis, chat_title=title, language=language)
-    lines = [title, "", t(language, "ai_communication_analysis"), context_label(context_category, language=language), ""]
+    period = sanitize_label(analysis.get("period_label") or result.get("period_label"), fallback=t(language, "period_full_history"), limit=60)
+    lines = [
+        f"**{title}**",
+        f"_{context_label(context_category, language=language)} · {period}_",
+        "",
+        f"**{t(language, 'ai_communication_analysis')}**",
+        "",
+    ]
     context_note = low_confidence_context_note(context, language=language) if context else ""
     if context_note:
         lines.extend([context_note, ""])
     lines.extend(
         [
-            context_score_label(context_category, language=language),
-            f"{float(score):.1f} / 10" if isinstance(score, (int, float)) else t(language, "ai_score_unreliable"),
+            f"**{context_score_label(context_category, language=language)}: {float(score):.1f} / 10**" if isinstance(score, (int, float)) else f"**{context_score_label(context_category, language=language)}: {t(language, 'ai_score_unreliable')}**",
             t(language, "ai_confidence_line", confidence=t(language, f"confidence_{confidence}") if confidence in {"low", "medium", "high"} else confidence),
             "",
         ]
@@ -520,13 +547,12 @@ def format_work_result_overview(analysis: dict[str, Any], *, chat_title: str, la
     score_explanation = format_score_explanation_compact(result.get("score_explanation"), language=language)
     coverage_line = format_ai_coverage_line(result.get("coverage") or analysis.get("coverage") or {}, language=language)
     limitations = compact_limitations(result.get("limitations"), language=language)
+    period = sanitize_label(analysis.get("period_label") or result.get("period_label"), fallback=t(language, "period_full_history"), limit=60)
     lines = [
-        chat_title,
+        f"**{chat_title}**",
+        f"_{context_label('work', language=language)} · {period}_",
         "",
-        context_label("work", language=language),
-        "",
-        context_score_label("work", language=language),
-        score_line,
+        f"**{context_score_label('work', language=language)}: {score_line}**",
         t(language, "ai_confidence_line", confidence=confidence_label(confidence, language=language)),
         "",
     ]
@@ -944,23 +970,20 @@ def format_unified_analysis_result(
     stands_out = compact_result_stands_out(metrics, chat_type=chat_type, language=language)
     attention = compact_attention_lines(report, confirmed_reminders=0, language=language)
     lines = [
-        sanitize_label(report.get("chat_title"), fallback=t(language, "chat_type_unknown"), limit=80),
+        f"**{sanitize_label(report.get('chat_title'), fallback=t(language, 'chat_type_unknown'), limit=80)}**",
+        f"_{t(language, 'analysis_result_local_mode')} · {sanitize_label(report.get('period_label'), fallback=t(language, 'not_available'), limit=60)} · {count} {t(language, 'analysis_result_messages').casefold()}_",
         "",
-        t(language, "analysis_result_title"),
-        t(language, "analysis_result_local_mode"),
+        f"**{t(language, 'analysis_result_title')}**",
         "",
         current_snapshot_sentence(metrics, chat_type=chat_type, language=language) if count else t(language, "overview_no_messages"),
         "",
-        f"{t(language, 'analysis_result_period')}: {sanitize_label(report.get('period_label'), fallback=t(language, 'not_available'), limit=60)}",
-        f"{t(language, 'analysis_result_messages')}: {count}",
-        "",
-        t(language, "analysis_result_stands_out"),
+        f"**{t(language, 'analysis_result_stands_out')}**",
         *(stands_out or [t(language, "empty")]),
         "",
-        t(language, "analysis_result_attention"),
+        f"**{t(language, 'analysis_result_attention')}**",
         *(attention or [t(language, "overview_no_attention")]),
         "",
-        t(language, "analysis_result_quality"),
+        f"**{t(language, 'analysis_result_quality')}**",
         f"{t(language, 'report_confidence')}: {sanitize_label(quality.get('confidence'), fallback=t(language, 'not_available'), limit=40)}",
         f"{t(language, 'report_completeness')}: {sanitize_label(quality.get('completeness'), fallback=t(language, 'not_available'), limit=80)}",
     ]
@@ -2078,14 +2101,14 @@ def format_events(
     return "\n".join(lines)
 
 
-def format_category_prompt(*, folder_count: int = 0) -> str:
+def format_category_prompt(*, folder_count: int = 0, language: str = "en") -> str:
     lines = [
-        "Analyze a chat",
+        f"**{t(language, 'nav_chats')}**",
         "",
-        "Choose where to browse.",
+        t(language, "nav_choose_category"),
     ]
     if folder_count:
-        lines.append(f"Telegram folders found: {folder_count}")
+        lines.append(t(language, "nav_telegram_folders_found", count=folder_count))
     return "\n".join(lines)
 
 
@@ -2096,31 +2119,38 @@ def format_chat_page(
     last_item: int,
     total: int,
     search_query: str | None = None,
+    page: int = 0,
+    page_size: int = 10,
+    language: str = "en",
 ) -> str:
-    lines = ["Select a chat", "", sanitize_label(title, fallback="Chats")]
+    display_title = sanitize_label(title, fallback=t(language, "nav_chats"))
+    total_pages = max(1, (int(total) + page_size - 1) // max(1, page_size))
+    lines = [f"**{display_title}**", f"_{t(language, 'nav_page_indicator', current=page + 1, total=total_pages)}_"]
     if search_query:
-        lines.append(f"Search: {sanitize_label(search_query, fallback='query', limit=60)}")
+        lines.extend(["", t(language, "nav_search_results_hint")])
     if total:
-        lines.append(f"Showing {first_item}-{last_item} of {total}.")
+        lines.append(t(language, "nav_showing_range", first=first_item, last=last_item, total=total))
     else:
-        lines.append("No chats matched. Try another section or search.")
+        if search_query:
+            lines.extend(["", f"**{t(language, 'nav_no_search_results_title')}**", t(language, "nav_no_search_results_body")])
+        elif display_title == t(language, "nav_private_chats"):
+            lines.extend(["", f"**{t(language, 'nav_no_private_chats_title')}**", t(language, "nav_no_private_chats_body")])
+        else:
+            lines.extend(["", t(language, "nav_empty_list")])
     return "\n".join(lines)
 
 
-def format_search_prompt() -> str:
-    return (
-        "Search chat\n\n"
-        "Send a title, display name, or username. Message contents are not searched."
-    )
+def format_search_prompt(*, language: str = "en") -> str:
+    return "\n\n".join([f"**{t(language, 'nav_search')}**", t(language, "nav_search_prompt")])
 
 
-def format_period_prompt(*, chat_title: str | None, chat_type: str | None) -> str:
+def format_period_prompt(*, chat_title: str | None, chat_type: str | None, language: str = "en") -> str:
     return "\n".join(
         [
-            "Choose a time period",
+            f"**{t(language, 'analysis_period_title')}**",
             "",
-            f"Chat: {sanitize_label(chat_title, fallback='untitled')}",
-            f"Type: {readable_chat_type(chat_type)}",
+            f"{t(language, 'nav_chat_label')}: {sanitize_label(chat_title, fallback=t(language, 'chat_type_unknown'))}",
+            f"{t(language, 'nav_type_label')}: {readable_chat_type(chat_type, language=language)}",
         ]
     )
 
@@ -2930,7 +2960,11 @@ def format_destructive_confirmation(action_label: str) -> str:
 def readable_chat_type(chat_type: str | None, *, language: str = "en") -> str:
     return {
         "one_to_one": t(language, "chat_type_person"),
+        "self": t(language, "nav_chat_type_self"),
+        "bot": t(language, "nav_chat_type_bot"),
         "group": t(language, "chat_type_group"),
+        "supergroup": t(language, "chat_type_group"),
+        "basic_group": t(language, "chat_type_group"),
         "channel": t(language, "chat_type_channel"),
     }.get(chat_type or "", t(language, "chat_type_unknown"))
 

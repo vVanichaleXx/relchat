@@ -82,6 +82,22 @@ people. UX audit may record counts and scores such as specificity score,
 distinctive finding count, duplicate count, advice generated/omitted, context,
 and evidence depth; it must not record report text or recommendation text.
 
+Product UX v13 adds Telegram UI metadata for native navigation: RelChat
+favorites, RelChat pins, recent RelChat chat opens, cached chat types,
+normalized titles for metadata-only search, and short navigation state tokens.
+These records are scoped by `bot_user_id` and are used only for private-first
+discovery, quick access, pagination, and safe Back navigation. They must not be
+interpreted as closeness, attraction, emotional importance, or a ranking of
+people.
+
+V13 navigation callbacks use short state references instead of raw Telegram
+chat IDs. UX audit may record safe fields such as screen ID, previous screen
+ID, category opened, page number, list result count, search-used flag,
+quick-access-used flag, chat type, stale callback, menu edit fallback, and path
+length to analysis. It must not record chat title, search query, participant
+name, username, phone number, Telegram ID, exact callback data, report text, or
+message content.
+
 ## Telegram Bot Interface
 
 Bot Interface v0 is a private UI for local RelChat operations. It can show setup

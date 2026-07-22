@@ -7,9 +7,11 @@ from typing import Any
 from telegram import Update
 from telegram.ext import ContextTypes
 
-from relchat.bot.formatters import chunk_text, format_main_menu
+from relchat.bot.formatters import chunk_text, format_main_menu, sanitize_label
 from relchat.bot.keyboards import main_keyboard
 from relchat.bot.localization import t
+from relchat.bot.services.chat_types import chat_type_icon
+from relchat.bot.services.native_navigation import register_nav_token, reset_navigation
 from relchat.bot.security import is_allowed_update, is_private_chat, mtproto_session_exists
 from relchat.bot.services.ux_audit import (
     error_payload,
@@ -19,7 +21,7 @@ from relchat.bot.services.ux_audit import (
     set_current_audit_settings,
 )
 from relchat.config import Settings
-from relchat.database.repositories import dashboard_counts, ensure_user_profile, get_user_settings
+from relchat.database.repositories import dashboard_counts, ensure_user_profile, get_user_settings, list_quick_access_chats
 from relchat.database.sqlite import connect, init_db
 
 
@@ -78,6 +80,18 @@ async def render_main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         ensure_user_profile(conn, user_id)
         language = get_user_settings(conn, user_id).get("language", "en")
         counts = dashboard_counts(conn, user_id)
+        quick_access = list_quick_access_chats(conn, user_id, limit=5)
+    reset_navigation(context.user_data)
+    quick_tokens = []
+    for chat in quick_access:
+        token = register_nav_token(
+            context.user_data,
+            bot_user_id=user_id,
+            payload={"source": chat.get("source") or "telegram", "chat_id": chat.get("chat_id"), "screen": "quick"},
+            prefix="q",
+        )
+        label = f"{chat_type_icon(chat)} {sanitize_label(chat.get('title') or chat.get('display_title'), fallback=t(language, 'chat_type_unknown'), limit=28)}"
+        quick_tokens.append((label, token))
     text = format_main_menu(
         language=language,
         telegram_connected=mtproto_session_exists(settings.session_path),
@@ -85,8 +99,9 @@ async def render_main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         reports=counts["reports"],
         followups=counts["active_reminders"],
         running_jobs=counts["running_jobs"],
+        quick_access=quick_access,
     )
-    await edit_or_reply(update, text, reply_markup=main_keyboard(language))
+    await edit_or_reply(update, text, reply_markup=main_keyboard(language, quick_access=quick_tokens))
 
 
 async def reply_chunks(update: Update, text: str, *, reply_markup: Any | None = None) -> None:
@@ -128,6 +143,7 @@ async def edit_or_reply(update: Update, text: str, *, reply_markup: Any | None =
         except Exception as exc:
             if exc.__class__.__name__ != "BadRequest":
                 raise
+            record_current_ux_event("menu_edit_fallback", update=update, payload={"menu_edit_fallback": True})
     await reply_chunks(update, text, reply_markup=reply_markup)
 
 

@@ -68,6 +68,14 @@ relchat/
                  Evidence-linked recommendation generation and advice omission
   bot/services/specificity_validator.py
                  Non-template report quality gate and safe genericness cleanup
+  bot/services/chat_types.py
+                 Telegram metadata-based chat type/category classification
+  bot/services/chat_ranking.py
+                 Private-first deterministic chat ranking and quick access selection
+  bot/services/chat_search.py
+                 Unicode-safe metadata-only chat search ranking
+  bot/services/native_navigation.py
+                 Per-user Telegram navigation stack and short callback token registry
   bot/services/score_explanation.py
                  User-facing score contributor and cap summaries
   bot/services/retry_policy.py
@@ -175,6 +183,32 @@ engine.
 The Bot API must not be treated as a data access layer. It cannot read a user's
 private chat history by itself. RelChat imports selected chats through the local
 user-authorized Telethon / MTProto session.
+
+Product UX v13 makes Telegram navigation a first-class bot concern. The main
+menu is private-chat-first: private chats, favorites, recents, and search are
+primary; groups, channels, bots, and settings are secondary. Quick access uses
+per-user pinned, favorite, recently opened, and recently analyzed private chats.
+It never ranks chats by emotional importance and never uses message content.
+
+Chat discovery uses Telegram metadata normalized into cached chat types:
+private human, bot, group/supergroup, channel, self/saved messages, unavailable,
+or unknown. `chat_types.py`, `chat_ranking.py`, and `chat_search.py` keep this
+classification, ranking, and search policy out of handlers. `native_navigation.py`
+keeps a bounded per-user back stack and short callback tokens in bot state; stale
+tokens fall back to a localized stale-menu screen with a Main Menu button.
+
+Paginated screens use one row per chat, bounded pages, arrow controls, a visible
+page indicator, and a clear Main Menu exit. Handlers prefer editing the current
+menu message and fall back to sending a replacement if Telegram rejects the edit.
+Callback data must not contain Telegram chat IDs, bot user IDs, usernames,
+phone numbers, report text, or search queries.
+
+Report presentation is also part of the bot boundary. Compact results show the
+chat title, context/period metadata, score or local-mode state, the main story,
+the strongest supported profile/friction/strength, one recommendation when
+useful, and a short data/limitations note. Full analysis, evidence, comparison,
+score explanation, timeline, memory, settings, and deletion controls stay behind
+secondary Chat Home or detail actions.
 
 Optional AI-enhanced Communication analysis is composed from this layer through
 `bot/services/ai_analysis.py`, but the service itself consumes source-agnostic

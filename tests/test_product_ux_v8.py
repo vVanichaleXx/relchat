@@ -101,7 +101,7 @@ class ProductUxV8Test(unittest.IsolatedAsyncioTestCase):
             with patch("relchat.bot.handlers.analysis.refresh_dialog_cache", side_effect=AssertionError("network fetch should not run")):
                 await load_chat_browser(update, context)
 
-            self.assertIn("Choose", update.callback_query.edited_text)
+            self.assertIn("Private chats", update.callback_query.edited_text)
             self.assertEqual(len(context.user_data["chat_browser"]["conversations"]), 2)
 
             await handle_browse_callback(update, context, ["rc", "browse", "folder", "20"])
@@ -131,8 +131,8 @@ class ProductUxV8Test(unittest.IsolatedAsyncioTestCase):
         self.assertIn("Needs attention", rendered)
         self.assertIn("Data quality", rendered)
         self.assertNotIn("private secret text", rendered)
-        self.assertEqual(labels, ["Full analysis", "Advice", "Chat Home"])
-        self.assertLessEqual(len(labels), 3)
+        self.assertEqual(labels, ["📄 Full analysis", "💡 Why this conclusion", "💬 Chat", "🏠 Menu"])
+        self.assertLessEqual(len(labels), 4)
         self.assertTrue(all(len(value) < 64 for value in callbacks))
 
 

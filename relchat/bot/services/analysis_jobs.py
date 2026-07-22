@@ -23,6 +23,7 @@ from relchat.core.models import Message
 from relchat.database.repositories import (
     create_ai_analysis,
     create_period_comparison,
+    ensure_report_callback_token,
     get_chat_context_classification,
     get_analysis_job,
     get_user_settings,
@@ -668,6 +669,7 @@ async def edit_completed_message(
     }
     with connect_from_report(application, report) as conn:
         job = get_analysis_job(conn, report.get("job_id")) if report.get("job_id") else None
+        callback_ref = ensure_report_callback_token(conn, int(report.get("bot_user_id") or 0), report["report_id"])
     if job:
         job_like = job
     text = format_unified_analysis_result(
@@ -681,7 +683,7 @@ async def edit_completed_message(
         application,
         job_like,
         text,
-        reply_markup=analysis_result_keyboard(report["report_id"], language=language),
+        reply_markup=analysis_result_keyboard(callback_ref, language=language),
     )
 
 

@@ -239,13 +239,13 @@ class ProductUxV9AnalysisTest(unittest.TestCase):
         self.assertNotIn("Can we confirm Friday?", overview)
         self.assertNotIn("Visible message", full)
 
-    def test_result_keyboard_has_maximum_three_private_callbacks(self) -> None:
+    def test_result_keyboard_is_compact_and_navigation_safe(self) -> None:
         keyboard = analysis_result_keyboard("rep_123", language="en")
         labels = [button.text for row in keyboard.inline_keyboard for button in row]
         callbacks = [button.callback_data or "" for row in keyboard.inline_keyboard for button in row]
 
-        self.assertEqual(labels, ["Full analysis", "Advice", "Chat Home"])
-        self.assertLessEqual(len(labels), 3)
+        self.assertEqual(labels, ["📄 Full analysis", "💡 Why this conclusion", "💬 Chat", "🏠 Menu"])
+        self.assertLessEqual(len(labels), 4)
         self.assertTrue(all(len(value) < 64 for value in callbacks))
         self.assertNotIn("telegram-chat", "".join(callbacks))
 
